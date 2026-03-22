@@ -22,5 +22,9 @@ celery_app.conf.beat_schedule = {
     "otimizador-geco-cortar-sangria-a-cada-2-horas": {
         "task": "workers.geco_tasks.otimizador_geco_cortar_sangria",
         "schedule": crontab(minute=0, hour="*/2"),
+    },
+    "otimizador-geco-escala-vertical-diaria": {
+        "task": "workers.geco_tasks.otimizador_geco_escala_vertical",
+        "schedule": crontab(minute=0, hour=6),
     }
 }

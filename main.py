@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from api.routes.campaign_builder import router as campaign_builder_router
+from api.routes.dashboard import router as dashboard_router
 from api.routes.platform_sync import router as platform_sync_router
 from api.routes.webhooks import router as webhooks_router
 from models.database import Base, engine
@@ -30,6 +31,7 @@ app.add_middleware(
 app.mount("/lp", StaticFiles(directory="public/lps"), name="landing_pages")
 
 app.include_router(campaign_builder_router)
+app.include_router(dashboard_router, tags=["Dashboard"])
 app.include_router(platform_sync_router, prefix="/api/sync")
 app.include_router(webhooks_router, prefix="/webhook")
 

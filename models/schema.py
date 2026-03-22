@@ -48,6 +48,7 @@ class Campanha(Base):
     status = Column(String, nullable=False)
     orcamento_diario = Column(Float, nullable=False)
     roas_alvo = Column(Float, nullable=True)
+    cpa_alvo = Column(Float, nullable=True)
     meta_pixel_id = Column(String, nullable=True)
     google_conversion_action_id = Column(String, nullable=True)
     plataforma_campanha_id = Column(String, nullable=True)
