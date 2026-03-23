@@ -9,3 +9,7 @@ google-ads
 pydantic
 python-dotenv
 openai
+httpx
+reportlab
+PyJWT
+passlib[bcrypt]

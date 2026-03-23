@@ -1,12 +1,13 @@
 import asyncio
 import logging
+from datetime import datetime
 
 from engines.google_engine.collector import GoogleCollector
 from engines.google_engine.launcher import GoogleAdsLauncher
 from engines.meta_engine.collector import MetaCollector
 from engines.meta_engine.launcher import MetaAdsLauncher
 from models.database import get_db
-from models.schema import Campanha, Cliente, FerrioliConfig, LogOtimizacaoGECO
+from models.schema import Campanha, Cliente, FerrioliConfig, LogOtimizacaoGECO, MetricasDiarias
 from workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -26,6 +27,74 @@ def _montar_meta_credentials(ferrioli_config: FerrioliConfig) -> dict:
     return {
         "meta_bm_token": ferrioli_config.meta_bm_token,
     }
+
+
+def _upsert_metricas_diarias_collector(
+    db,
+    campanha_id: int,
+    spend: float,
+    conversoes: int,
+    servicos: list[dict] | None = None,
+) -> None:
+    """Cria ou atualiza metricas do dia por servico; fallback agregado quando nao houver granularidade."""
+    hoje = datetime.utcnow().date()
+
+    servicos_norm = [item for item in (servicos or []) if (item or {}).get("nome_servico")]
+    if not servicos_norm:
+        row = (
+            db.query(MetricasDiarias)
+            .filter(
+                MetricasDiarias.campanha_id == campanha_id,
+                MetricasDiarias.data == hoje,
+                MetricasDiarias.nome_servico.is_(None),
+            )
+            .first()
+        )
+        if row:
+            row.spend = float(spend)
+            row.conversoes = int(conversoes)
+        else:
+            db.add(
+                MetricasDiarias(
+                    campanha_id=campanha_id,
+                    data=hoje,
+                    nome_servico=None,
+                    spend=float(spend),
+                    conversoes=int(conversoes),
+                    receita=0.0,
+                )
+            )
+        return
+
+    for servico in servicos_norm:
+        nome_servico = str((servico or {}).get("nome_servico") or "").strip() or None
+        if not nome_servico:
+            continue
+        spend_servico = float((servico or {}).get("spend", 0.0) or 0.0)
+        conversoes_servico = int((servico or {}).get("conversions", 0) or 0)
+        row = (
+            db.query(MetricasDiarias)
+            .filter(
+                MetricasDiarias.campanha_id == campanha_id,
+                MetricasDiarias.data == hoje,
+                MetricasDiarias.nome_servico == nome_servico,
+            )
+            .first()
+        )
+        if row:
+            row.spend = spend_servico
+            row.conversoes = conversoes_servico
+        else:
+            db.add(
+                MetricasDiarias(
+                    campanha_id=campanha_id,
+                    data=hoje,
+                    nome_servico=nome_servico,
+                    spend=spend_servico,
+                    conversoes=conversoes_servico,
+                    receita=0.0,
+                )
+            )
 
 
 @celery_app.task(name="workers.geco_tasks.otimizador_geco_cortar_sangria")
@@ -89,6 +158,15 @@ def otimizador_geco_cortar_sangria():
 
             spend = float(metricas.get("spend", 0.0))
             conversions = int(metricas.get("conversions", 0))
+            _upsert_metricas_diarias_collector(
+                db=db,
+                campanha_id=campanha.id,
+                spend=spend,
+                conversoes=conversions,
+                servicos=metricas.get("servicos", []),
+            )
+            db.commit()
+
             limite_critico = float(campanha.orcamento_diario or 0.0) * 0.5
 
             if spend > limite_critico and conversions == 0:
@@ -215,6 +293,16 @@ def otimizador_geco_escala_vertical():
                 continue
 
             conversions = int(metricas.get("conversions", 0))
+            spend = float(metricas.get("spend", 0.0))
+            _upsert_metricas_diarias_collector(
+                db=db,
+                campanha_id=campanha.id,
+                spend=spend,
+                conversoes=conversions,
+                servicos=metricas.get("servicos", []),
+            )
+            db.commit()
+
             cpa = float(metricas.get("cpa", 0.0))
             limite_escala = float(campanha.cpa_alvo or 0.0) * 0.85
 

@@ -1,5 +1,6 @@
 import hashlib
 import logging
+from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends
@@ -7,12 +8,37 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from models.database import get_db
-from models.schema import Campanha, Cliente, ConversaoAgenteSO, FerrioliConfig
+from models.schema import Campanha, Cliente, ConversaoAgenteSO, FerrioliConfig, MetricasDiarias
 from engines.google_engine.offline_conversions import GoogleOfflineConnector
 from engines.meta_engine.capi import MetaCAPIConnector
 
 router = APIRouter(tags=["webhooks"])
 logger = logging.getLogger(__name__)
+
+
+def _incrementar_receita_metricas_diarias(db, campanha_id: int, valor_venda: Optional[float]) -> None:
+    valor = float(valor_venda or 0.0)
+    hoje = datetime.utcnow().date()
+    row = (
+        db.query(MetricasDiarias)
+        .filter(
+            MetricasDiarias.campanha_id == campanha_id,
+            MetricasDiarias.data == hoje,
+        )
+        .first()
+    )
+    if row:
+        row.receita = float(row.receita or 0.0) + valor
+    else:
+        db.add(
+            MetricasDiarias(
+                campanha_id=campanha_id,
+                data=hoje,
+                spend=0.0,
+                conversoes=0,
+                receita=valor,
+            )
+        )
 
 
 class ConversaoAgenteSOPayload(BaseModel):
@@ -61,6 +87,8 @@ def registrar_conversao_agenteso(
         valor_venda=payload.valor_venda,
     )
     db.add(conversao)
+    if campanha:
+        _incrementar_receita_metricas_diarias(db, campanha.id, payload.valor_venda)
     db.commit()
     db.refresh(conversao)
 
