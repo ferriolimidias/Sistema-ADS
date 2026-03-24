@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from models.database import get_db
 from models.schema import Campanha, Cliente, ConversaoAgenteSO, FerrioliConfig, MetricasDiarias
+from engines.utils.evolution_service import EvolutionService
 from engines.google_engine.offline_conversions import GoogleOfflineConnector
 from engines.meta_engine.capi import MetaCAPIConnector
 
@@ -147,6 +148,38 @@ def registrar_conversao_agenteso(
             logger.warning(
                 "Dados insuficientes para envio Google Offline Conversion. campanha_id=%s",
                 campanha.id,
+            )
+
+    # Se cair no webhook, avisa. A Meta/Google se viram para dar o match.
+    if ferrioli_config and cliente and cliente.whatsapp_group_jid:
+        try:
+            produto_vendido = payload.tag_aplicada or "Servico/Produto nao especificado"
+            valor_venda_num = float(payload.valor_venda or 0.0)
+            valor_formatado = (
+                f"R$ {valor_venda_num:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                if valor_venda_num > 0
+                else "Valor nao informado"
+            )
+
+            mensagem_venda = (
+                "🎉 *NOVA VENDA REGISTRADA!* 🎉\n\n"
+                "O Sistema ADS acabou de receber a confirmacao de uma venda no seu funil.\n\n"
+                f"🛍️ *Item/Origem:* {produto_vendido}\n"
+                f"💰 *Valor da Venda:* {valor_formatado}\n\n"
+                "🤖 *Acao da IA:* Ja enviamos os dados deste comprador para os algoritmos de anuncio (Google/Meta). "
+                "Se ele veio de uma campanha, a plataforma acabou de ficar mais inteligente para buscar clones dele! 🚀"
+            )
+
+            EvolutionService().enviar_texto_whatsapp(
+                config=ferrioli_config,
+                numero_destino=cliente.whatsapp_group_jid,
+                mensagem=mensagem_venda,
+            )
+        except Exception:
+            logger.exception(
+                "Falha ao enviar notificacao de venda via WhatsApp no webhook. cliente_id=%s campanha_id=%s",
+                cliente.id if cliente else None,
+                campanha.id if campanha else None,
             )
 
     return {"status": "sucesso", "mensagem": "Conversão registrada"}

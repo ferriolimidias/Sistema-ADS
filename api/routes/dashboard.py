@@ -1319,6 +1319,8 @@ def _gerar_pdf_relatorio_campanha(
     gasto: float,
     faturamento: float,
     roas: Optional[float],
+    total_leads: int,
+    economia_ia: float,
 ) -> Path:
     try:
         from reportlab.lib.pagesizes import A4
@@ -1357,6 +1359,13 @@ def _gerar_pdf_relatorio_campanha(
     c.drawString(40, y, f"Faturamento: {_formatar_brl(faturamento)}")
     y -= 18
     c.drawString(40, y, f"ROAS: {(f'{roas:.2f}x' if roas is not None else 'N/A')}")
+    y -= 24
+    c.drawString(40, y, f"Total de Leads: {total_leads}")
+    y -= 24
+    c.setFont("Helvetica-Bold", 11)
+    c.setFillColorRGB(0.1, 0.6, 0.2)
+    c.drawString(40, y, f"Economia com IA (Termos Sujos): {_formatar_brl(economia_ia)}")
+    c.setFillColorRGB(0, 0, 0)
     y -= 24
 
     c.setFont("Helvetica-Oblique", 9)
@@ -1405,6 +1414,20 @@ def enviar_relatorio_whatsapp(
         .scalar()
         or 0
     )
+    data_inicio_logs = datetime.utcnow() - timedelta(days=30)
+    logs_negativacao = (
+        db.query(AuditLog)
+        .filter(
+            AuditLog.acao == "NEGATIVAR_TERMO",
+            AuditLog.timestamp >= data_inicio_logs,
+        )
+        .all()
+    )
+    economia_ia = sum(
+        float((log.detalhes or {}).get("economia_mensal_estimada", 0.0) or 0.0)
+        for log in logs_negativacao
+        if int(((log.detalhes or {}).get("campanha_id", 0) or 0)) == campanha.id
+    )
 
     insight_estrategico: Optional[str] = None
     try:
@@ -1430,6 +1453,9 @@ def enviar_relatorio_whatsapp(
         f"💰 Faturamento: {_formatar_brl(faturamento)}\n"
         f"📈 ROAS: {(f'{roas:.2f}x' if roas is not None else 'N/A')}"
     )
+    mensagem += f"\n👥 Leads Gerados: {total_leads}"
+    if economia_ia > 0:
+        mensagem += f"\n🛡️ Economia com IA: {_formatar_brl(economia_ia)} salvos!"
     if insight_estrategico:
         mensagem += f"\n\n💡 *Insight Estrategico (IA):*\n{insight_estrategico}"
 
@@ -1441,6 +1467,8 @@ def enviar_relatorio_whatsapp(
             gasto=gasto,
             faturamento=faturamento,
             roas=roas,
+            total_leads=total_leads,
+            economia_ia=economia_ia,
         )
         pdf_nome = f"relatorio_campanha_{campanha.id}.pdf"
         result = EvolutionService().enviar_relatorio_pdf(

@@ -7,7 +7,7 @@ from fastapi import Request
 from sqlalchemy.orm import Session
 
 from engines.utils.evolution_service import EvolutionService
-from models.schema import AuditLog, FerrioliConfig, Usuario
+from models.schema import AuditLog, ConfiguracaoSistema, FerrioliConfig, Usuario
 
 
 def _extract_ip(request: Request | None) -> str | None:
@@ -98,7 +98,12 @@ async def _avaliar_e_disparar_alerta(
     detalhes: dict[str, Any] | None,
     ip_address: str | None,
 ) -> None:
-    admin_number = (os.getenv("ADMIN_WHATSAPP_NUMBER") or "").strip()
+    config_sistema = db.query(ConfiguracaoSistema).filter(ConfiguracaoSistema.id == 1).first()
+    admin_number = (
+        config_sistema.admin_whatsapp_number
+        if config_sistema and config_sistema.admin_whatsapp_number
+        else os.getenv("ADMIN_WHATSAPP_NUMBER", "")
+    ).strip()
     if not admin_number:
         return
 

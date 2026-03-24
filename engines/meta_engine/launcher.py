@@ -241,6 +241,11 @@ class MetaAdsLauncher:
                 ad_obj[Ad.Field.adset_id] = adset_id
                 ad_obj[Ad.Field.creative] = {"creative_id": creative_id}
                 ad_obj[Ad.Field.status] = "PAUSED"
+                try:
+                    ad_obj[Ad.Field.url_tags] = "utm_term={{adset.name}}"
+                except Exception:
+                    # Fallback defensivo para variacoes de SDK/campo.
+                    ad_obj["url_tags"] = "utm_term={{adset.name}}"
                 ad_obj.api_create()
 
             return True, campaign_id, None

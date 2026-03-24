@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Bar, BarChart, CartesianGrid, Cell, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from "recharts";
 
+import DaypartingHeatmap from "../../components/charts/DaypartingHeatmap";
+import AIPerformanceWidget from "../../components/dashboard/AIPerformanceWidget";
 import ServiceBreakdownChart from "../../components/charts/ServiceBreakdownChart";
 import ServiceRankingTable from "../../components/dashboard/ServiceRankingTable";
 import OptimizationModal from "../../components/modals/OptimizationModal";
@@ -375,24 +377,6 @@ export default function Dashboard() {
       })),
     [deviceData]
   );
-  const hourlyChartData = useMemo(() => {
-    const mapa = {};
-    for (const item of Array.isArray(hourlyData) ? hourlyData : []) {
-      const hora = Number(item.hour_of_day || 0);
-      if (!mapa[hora]) {
-        mapa[hora] = { hora, conversoes: 0, custo: 0 };
-      }
-      mapa[hora].conversoes += Number(item.conversions || 0);
-      mapa[hora].custo += Number(item.cost || 0);
-    }
-    return Object.values(mapa)
-      .sort((a, b) => a.hora - b.hora)
-      .map((x) => ({
-        hora: `${String(x.hora).padStart(2, "0")}h`,
-        conversoes: Number(x.conversoes.toFixed(2)),
-        custo: Number(x.custo.toFixed(2)),
-      }));
-  }, [hourlyData]);
   const isLoading = isLoadingPerformance || isLoadingCampanhas;
 
   if (isLoading) return <DashboardSkeleton />;
@@ -400,6 +384,8 @@ export default function Dashboard() {
   return (
     <div className="min-h-screen bg-slate-50 p-6">
       <div className="mx-auto max-w-7xl space-y-6">
+        {isAdmin ? <AIPerformanceWidget /> : null}
+
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
           <Card>
             <p className="text-sm font-medium text-slate-500">Gasto Total</p>
@@ -641,20 +627,10 @@ export default function Dashboard() {
               <div className="mt-4 grid grid-cols-1 gap-4 xl:grid-cols-2">
                 <Card>
                   <FormSection
-                    title="Conversões por Hora"
-                    description="Barras representam o volume de conversões por faixa horária."
+                    title="Heatmap de Conversões por Horário"
+                    description="Verde indica conversão; vermelho sinaliza vazamento sem lead."
                   >
-                    <div className="h-72">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <BarChart data={hourlyChartData}>
-                          <CartesianGrid strokeDasharray="3 3" />
-                          <XAxis dataKey="hora" />
-                          <YAxis />
-                          <Tooltip />
-                          <Bar dataKey="conversoes" fill="#2563eb" />
-                        </BarChart>
-                      </ResponsiveContainer>
-                    </div>
+                    <DaypartingHeatmap data={hourlyData} />
                     {hourlyResumo ? <p className="mt-3 text-xs text-slate-600">{hourlyResumo}</p> : null}
                   </FormSection>
                 </Card>
