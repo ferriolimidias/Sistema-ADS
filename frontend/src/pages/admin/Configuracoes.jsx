@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Cell, Pie, PieChart, ResponsiveContainer, Tooltip } from "recharts";
 
 import Button from "../../components/ui/Button";
 import Card from "../../components/ui/Card";
@@ -8,6 +9,13 @@ import { useToast } from "../../components/ui/ToastProvider";
 import { authFetch } from "../../lib/auth";
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
+const PIE_COLORS = ["#2563eb", "#14b8a6", "#7c3aed", "#f97316"];
+
+function formatUSD(value) {
+  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 4 }).format(
+    Number(value || 0)
+  );
+}
 
 export default function Configuracoes() {
   const toast = useToast();
@@ -16,6 +24,7 @@ export default function Configuracoes() {
   const [isCreatingClient, setIsCreatingClient] = useState(false);
   const [formErrors, setFormErrors] = useState({});
   const [novoClienteErrors, setNovoClienteErrors] = useState({});
+  const [isLoadingStatsIA, setIsLoadingStatsIA] = useState(true);
   const [formData, setFormData] = useState({
     razao_social: "",
     cnpj: "",
@@ -31,6 +40,17 @@ export default function Configuracoes() {
     criar_grupo: false,
     logo_url: "",
   });
+  const [statsIA, setStatsIA] = useState({
+    custo_total_ia: 0,
+    tokens_total: 0,
+    economia_gerada_ia: 0,
+    roi_estimado_limpeza: 0,
+    por_modelo: [],
+  });
+  const [sistemaConfig, setSistemaConfig] = useState({
+    intraday_cleaner_enabled: false,
+    admin_whatsapp_number: "",
+  });
 
   function updateField(field, value) {
     setFormData((prev) => ({ ...prev, [field]: value }));
@@ -40,14 +60,43 @@ export default function Configuracoes() {
     setNovoClienteData((prev) => ({ ...prev, [field]: value }));
   }
 
+  async function salvarConfiguracaoSistema(updatePatch, loadingMessage = "Salvando configuração...") {
+    const promise = authFetch(`${API_BASE_URL}/admin/configuracoes-sistema`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(updatePatch),
+    }).then(async (response) => {
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload?.detail || "Falha ao salvar configuração de sistema.");
+      setSistemaConfig({
+        intraday_cleaner_enabled: Boolean(payload?.intraday_cleaner_enabled),
+        admin_whatsapp_number: String(payload?.admin_whatsapp_number || ""),
+      });
+      return payload;
+    });
+    return toast.promise(promise, {
+      loading: loadingMessage,
+      success: "Configuração de sistema atualizada.",
+      error: (error) => error?.message || "Erro ao salvar configuração de sistema.",
+    });
+  }
+
   useEffect(() => {
     let mounted = true;
     (async () => {
       try {
         setIsLoading(true);
-        const response = await authFetch(`${API_BASE_URL}/admin/configuracoes`);
-        if (!response.ok) throw new Error("Falha ao carregar configuracoes.");
-        const payload = await response.json();
+        setIsLoadingStatsIA(true);
+        const [configResponse, statsResponse, sistemaResponse] = await Promise.all([
+          authFetch(`${API_BASE_URL}/admin/configuracoes`),
+          authFetch(`${API_BASE_URL}/admin/stats-ia?periodo_dias=30`),
+          authFetch(`${API_BASE_URL}/admin/configuracoes-sistema`),
+        ]);
+        if (!configResponse.ok) throw new Error("Falha ao carregar configuracoes.");
+        if (!sistemaResponse.ok) throw new Error("Falha ao carregar configuracoes de sistema.");
+        const payload = await configResponse.json();
+        const payloadStats = statsResponse.ok ? await statsResponse.json() : null;
+        const payloadSistema = await sistemaResponse.json();
         if (mounted) {
           setFormData({
             razao_social: payload.razao_social || "",
@@ -55,12 +104,28 @@ export default function Configuracoes() {
             whatsapp: payload.whatsapp || "",
             meta_page_id: payload.meta_page_id || "",
           });
+          if (payloadStats?.status === "sucesso") {
+            setStatsIA({
+              custo_total_ia: Number(payloadStats.custo_total_ia || 0),
+              tokens_total: Number(payloadStats.tokens_total || 0),
+              economia_gerada_ia: Number(payloadStats.economia_gerada_ia || 0),
+              roi_estimado_limpeza: Number(payloadStats.roi_estimado_limpeza || 0),
+              por_modelo: Array.isArray(payloadStats.por_modelo) ? payloadStats.por_modelo : [],
+            });
+          }
+          setSistemaConfig({
+            intraday_cleaner_enabled: Boolean(payloadSistema?.intraday_cleaner_enabled),
+            admin_whatsapp_number: String(payloadSistema?.admin_whatsapp_number || ""),
+          });
         }
       } catch (error) {
         console.error(error);
         if (mounted) toast.error("Erro ao carregar configurações.");
       } finally {
-        if (mounted) setIsLoading(false);
+        if (mounted) {
+          setIsLoading(false);
+          setIsLoadingStatsIA(false);
+        }
       }
     })();
 
@@ -305,6 +370,140 @@ export default function Configuracoes() {
               </Button>
             </div>
           </form>
+        </Card>
+
+        <Card className="mt-6">
+          <FormSection
+            title="Saúde e Custos"
+            description="Monitoramento do custo da IA, consumo de tokens e retorno estimado da automacao."
+          >
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                <p className="text-xs font-semibold uppercase text-slate-500">Custo Total de IA (Mês)</p>
+                <p className="mt-2 text-2xl font-bold text-slate-900">
+                  {isLoadingStatsIA ? "..." : formatUSD(statsIA.custo_total_ia)}
+                </p>
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                <p className="text-xs font-semibold uppercase text-slate-500">Tokens Consumidos</p>
+                <p className="mt-2 text-2xl font-bold text-slate-900">
+                  {isLoadingStatsIA ? "..." : Number(statsIA.tokens_total || 0).toLocaleString("pt-BR")}
+                </p>
+              </div>
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                <p className="text-xs font-semibold uppercase text-slate-500">Economia Gerada pela IA</p>
+                <p className="mt-2 text-2xl font-bold text-emerald-600">
+                  {isLoadingStatsIA ? "..." : formatUSD(statsIA.economia_gerada_ia)}
+                </p>
+                <p className="mt-1 text-xs text-slate-500">
+                  ROI estimado limpeza: {isLoadingStatsIA ? "..." : formatUSD(statsIA.roi_estimado_limpeza)}
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-4 rounded-xl border border-slate-200 p-4">
+              <p className="mb-3 text-sm font-semibold text-slate-700">Distribuição de uso (GPT-4o vs GPT-4o-mini)</p>
+              <div className="h-56">
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie
+                      data={statsIA.por_modelo}
+                      dataKey="tokens_total"
+                      nameKey="modelo"
+                      innerRadius={55}
+                      outerRadius={85}
+                      paddingAngle={3}
+                    >
+                      {(statsIA.por_modelo || []).map((entry, index) => (
+                        <Cell key={`${entry.modelo}-${index}`} fill={PIE_COLORS[index % PIE_COLORS.length]} />
+                      ))}
+                    </Pie>
+                    <Tooltip
+                      formatter={(value, name, props) => [
+                        Number(value || 0).toLocaleString("pt-BR"),
+                        `${props?.payload?.modelo || name}`,
+                      ]}
+                    />
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
+              <div className="mt-2 flex flex-wrap gap-2 text-xs text-slate-600">
+                {(statsIA.por_modelo || []).map((item, index) => (
+                  <span
+                    key={item.modelo}
+                    className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-1"
+                  >
+                    <span
+                      className="inline-block h-2 w-2 rounded-full"
+                      style={{ backgroundColor: PIE_COLORS[index % PIE_COLORS.length] }}
+                    />
+                    {item.modelo}: {Number(item.tokens_total || 0).toLocaleString("pt-BR")} tokens
+                  </span>
+                ))}
+              </div>
+            </div>
+          </FormSection>
+        </Card>
+
+        <Card className="mt-6">
+          <FormSection
+            title="Inteligência"
+            description="Controles globais da automação de limpeza intra-day."
+          >
+            <div className="space-y-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-semibold text-slate-900">
+                    Ativar Limpeza Intra-day Automática (A cada 3h)
+                  </p>
+                  <p className="mt-1 text-xs text-slate-500">
+                    Controle em tempo real da task agendada no Celery Beat.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={sistemaConfig.intraday_cleaner_enabled}
+                  onClick={() =>
+                    salvarConfiguracaoSistema(
+                      { intraday_cleaner_enabled: !sistemaConfig.intraday_cleaner_enabled },
+                      "Atualizando status da limpeza intra-day..."
+                    )
+                  }
+                  className={`relative inline-flex h-7 w-14 items-center rounded-full transition ${
+                    sistemaConfig.intraday_cleaner_enabled ? "bg-emerald-600" : "bg-slate-300"
+                  }`}
+                >
+                  <span
+                    className={`inline-block h-5 w-5 transform rounded-full bg-white transition ${
+                      sistemaConfig.intraday_cleaner_enabled ? "translate-x-8" : "translate-x-1"
+                    }`}
+                  />
+                </button>
+              </div>
+
+              <div className="max-w-md">
+                <Input
+                  label="Número do WhatsApp Admin"
+                  placeholder="5554999999999"
+                  value={sistemaConfig.admin_whatsapp_number}
+                  onChange={(e) =>
+                    setSistemaConfig((prev) => ({
+                      ...prev,
+                      admin_whatsapp_number: e.target.value,
+                    }))
+                  }
+                  onBlur={(e) =>
+                    salvarConfiguracaoSistema(
+                      { admin_whatsapp_number: String(e.target.value || "").replace(/\D/g, "") || null },
+                      "Atualizando WhatsApp do admin..."
+                    )
+                  }
+                />
+                <p className="mt-1 text-xs text-slate-500">Formato esperado: DDI+DDD+numero (somente dígitos).</p>
+              </div>
+            </div>
+          </FormSection>
         </Card>
       </div>
     </div>

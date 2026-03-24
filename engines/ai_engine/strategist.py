@@ -3,7 +3,7 @@ import logging
 import os
 from typing import Any
 
-from api.utils.ai_config import MODEL_ANALYSIS
+from api.utils.ai_config import MODEL_ANALYSIS, registrar_consumo_ia
 from openai import AsyncOpenAI
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -47,6 +47,13 @@ def _log_modelo_e_tokens(task: str, model: str, response: Any, payload_referenci
             prompt_est,
             completion_est,
         )
+        registrar_consumo_ia(
+            db=None,
+            modelo=model,
+            tokens_in=prompt_est,
+            tokens_out=completion_est,
+            tarefa=task,
+        )
         return
     logger.info(
         "[AI][%s] modelo=%s tokens=%s (prompt=%s completion=%s)",
@@ -55,6 +62,13 @@ def _log_modelo_e_tokens(task: str, model: str, response: Any, payload_referenci
         total_tokens,
         prompt_tokens,
         completion_tokens,
+    )
+    registrar_consumo_ia(
+        db=None,
+        modelo=model,
+        tokens_in=int(prompt_tokens or 0),
+        tokens_out=int(completion_tokens or 0),
+        tarefa=task,
     )
 
 
@@ -122,7 +136,7 @@ async def gerar_insight_estrategico(
             {"role": "user", "content": prompt},
         ],
     )
-    _log_modelo_e_tokens("gerar_insight_estrategico", model, response, prompt)
+    _log_modelo_e_tokens("Insight Estratégico", model, response, prompt)
     content = (response.choices[0].message.content or "{}").strip()
     parsed = json.loads(content)
     insight = str(parsed.get("insight") or "").strip()
@@ -164,7 +178,7 @@ async def analisar_termos_sujos(
             {"role": "user", "content": prompt},
         ],
     )
-    _log_modelo_e_tokens("analisar_termos_sujos", model, response, prompt)
+    _log_modelo_e_tokens("Limpeza de Termos", model, response, prompt)
     content = (response.choices[0].message.content or "{}").strip()
     data = json.loads(content)
     termos = data.get("termos_negativar", [])
@@ -176,3 +190,300 @@ async def analisar_termos_sujos(
         if valor and valor.lower() not in {item.lower() for item in termos_limpos}:
             termos_limpos.append(valor)
     return {"termos_negativar": termos_limpos}
+
+
+async def analisar_performance_dispositivos(
+    dados_dispositivos: list[dict[str, Any]],
+    openai_api_key: str | None = None,
+) -> dict[str, Any]:
+    dispositivos = []
+    total_cost = 0.0
+    total_conv = 0.0
+    for item in dados_dispositivos or []:
+        device = str(item.get("device", "") or "").strip().upper() or "UNSPECIFIED"
+        cost = float(item.get("cost", 0.0) or 0.0)
+        conv = float(item.get("conversions", 0.0) or 0.0)
+        cpa = (cost / conv) if conv > 0 else None
+        total_cost += cost
+        total_conv += conv
+        dispositivos.append(
+            {
+                "device": device,
+                "clicks": int(item.get("clicks", 0) or 0),
+                "impressions": int(item.get("impressions", 0) or 0),
+                "cost": round(cost, 4),
+                "conversions": round(conv, 2),
+                "cpa": (round(cpa, 4) if cpa is not None else None),
+            }
+        )
+
+    media_cpa = (total_cost / total_conv) if total_conv > 0 else None
+    sugestoes: list[dict[str, Any]] = []
+    sugestoes_base: list[dict[str, Any]] = []
+    if media_cpa and media_cpa > 0:
+        limiar_ruim = media_cpa * 1.2
+        limiar_critico = media_cpa * 1.5
+        limiar_mobile_bom = media_cpa * 0.85
+        for item in dispositivos:
+            cpa = item.get("cpa")
+            cost = float(item.get("cost", 0.0) or 0.0)
+            conv = float(item.get("conversions", 0.0) or 0.0)
+            device = str(item.get("device", "UNSPECIFIED"))
+            if conv <= 0 and cost >= (float(media_cpa) * 2.0):
+                sugestoes_base.append(
+                    {
+                        "dispositivo": device,
+                        "ajuste_percentual": -20,
+                        "justificativa": (
+                            f"Gasto elevado sem conversao ({cost:.2f}) no periodo. "
+                            "Reduzir exposicao para conter desperdicio."
+                        ),
+                        "severidade": "ALTA",
+                    }
+                )
+                continue
+            if cpa is None:
+                continue
+            if float(cpa) > limiar_critico:
+                sugestoes_base.append(
+                    {
+                        "dispositivo": device,
+                        "ajuste_percentual": -20,
+                        "justificativa": (
+                            f"CPA ({float(cpa):.2f}) acima de 50% da media da campanha "
+                            f"({float(media_cpa):.2f})."
+                        ),
+                        "severidade": "ALTA",
+                    }
+                )
+            elif float(cpa) > limiar_ruim:
+                sugestoes_base.append(
+                    {
+                        "dispositivo": device,
+                        "ajuste_percentual": -15,
+                        "justificativa": (
+                            f"CPA ({float(cpa):.2f}) acima de 20% da media da campanha "
+                            f"({float(media_cpa):.2f})."
+                        ),
+                        "severidade": "MEDIA",
+                    }
+                )
+            elif device == "MOBILE" and float(cpa) <= limiar_mobile_bom and float(item.get("conversions", 0.0) or 0.0) > 0:
+                sugestoes_base.append(
+                    {
+                        "dispositivo": device,
+                        "ajuste_percentual": 10,
+                        "justificativa": (
+                            f"Mobile com CPA excelente ({float(cpa):.2f}) abaixo da media "
+                            f"({float(media_cpa):.2f}). Priorizar entrega."
+                        ),
+                        "severidade": "BAIXA",
+                    }
+                )
+    sugestoes = [dict(item) for item in sugestoes_base]
+
+    resumo_ia = ""
+    api_key = (openai_api_key or os.getenv("OPENAI_API_KEY") or "").strip()
+    if api_key:
+        prompt = (
+            "Analise performance por dispositivo e retorne JSON com resumo e sugestoes. "
+            "Use as sugestoes pre-calculadas como base e ajuste apenas se necessario.\n\n"
+            f"Dados: {json.dumps(dispositivos, ensure_ascii=False)}\n"
+            f"Media CPA: {round(float(media_cpa or 0.0), 4)}\n"
+            f"Sugestoes base: {json.dumps(sugestoes_base, ensure_ascii=False)}\n\n"
+            "Formato obrigatorio:\n"
+            '{"resumo":"texto","sugestoes":[{"dispositivo":"MOBILE","ajuste_percentual":-15,"justificativa":"...","severidade":"ALTA|MEDIA|BAIXA"}]}'
+        )
+        model = MODEL_ANALYSIS
+        client = AsyncOpenAI(api_key=api_key, timeout=14.0)
+        response = await client.chat.completions.create(
+            model=model,
+            response_format={"type": "json_object"},
+            temperature=0.2,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Voce e especialista em performance de Google Ads. "
+                        "Retorne apenas JSON valido com resumo e sugestoes contendo severidade."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
+        )
+        _log_modelo_e_tokens("Analise Dispositivos", model, response, prompt)
+        content = (response.choices[0].message.content or "{}").strip()
+        parsed = json.loads(content)
+        resumo_ia = str(parsed.get("resumo") or "").strip()
+        sugestoes_ia = parsed.get("sugestoes", [])
+        if isinstance(sugestoes_ia, list) and sugestoes_ia:
+            sugestoes = []
+            for item in sugestoes_ia:
+                dispositivo = str((item or {}).get("dispositivo", "")).strip().upper()
+                if not dispositivo:
+                    continue
+                severidade = str((item or {}).get("severidade", "MEDIA")).strip().upper()
+                if severidade not in {"ALTA", "MEDIA", "BAIXA"}:
+                    severidade = "MEDIA"
+                sugestoes.append(
+                    {
+                        "dispositivo": dispositivo,
+                        "ajuste_percentual": float((item or {}).get("ajuste_percentual", 0.0) or 0.0),
+                        "justificativa": str((item or {}).get("justificativa", "")).strip(),
+                        "severidade": severidade,
+                    }
+                )
+        if not sugestoes:
+            sugestoes = [dict(item) for item in sugestoes_base]
+
+    for sugestao in sugestoes:
+        if "severidade" not in sugestao:
+            sugestao["severidade"] = "MEDIA"
+
+    return {
+        "media_cpa": (round(float(media_cpa), 4) if media_cpa is not None else None),
+        "dispositivos": dispositivos,
+        "sugestoes": sugestoes,
+        "resumo_ia": resumo_ia,
+    }
+
+
+async def analisar_performance_horarios(
+    dados_horarios: list[dict[str, Any]],
+    openai_api_key: str | None = None,
+) -> dict[str, Any]:
+    horarios = []
+    total_cost = 0.0
+    total_conv = 0.0
+    for item in dados_horarios or []:
+        hora = int(item.get("hour_of_day", 0) or 0)
+        dia_semana = str(item.get("day_of_week", "UNSPECIFIED") or "UNSPECIFIED").strip().upper()
+        clicks = int(item.get("clicks", 0) or 0)
+        cost = float(item.get("cost", 0.0) or 0.0)
+        conv = float(item.get("conversions", 0.0) or 0.0)
+        cpa = (cost / conv) if conv > 0 else None
+        total_cost += cost
+        total_conv += conv
+        horarios.append(
+            {
+                "hour_of_day": hora,
+                "day_of_week": dia_semana,
+                "clicks": clicks,
+                "cost": round(cost, 4),
+                "conversions": round(conv, 2),
+                "cpa": (round(cpa, 4) if cpa is not None else None),
+            }
+        )
+
+    media_cpa = (total_cost / total_conv) if total_conv > 0 else None
+    media_conv_slot = (total_conv / len(horarios)) if horarios else 0.0
+    sugestoes_base: list[dict[str, Any]] = []
+    if media_cpa and media_cpa > 0:
+        for item in horarios:
+            hora = int(item.get("hour_of_day", 0) or 0)
+            dia = str(item.get("day_of_week", "UNSPECIFIED"))
+            conv = float(item.get("conversions", 0.0) or 0.0)
+            cost = float(item.get("cost", 0.0) or 0.0)
+            cpa = item.get("cpa")
+            if conv <= 0 and cost >= float(media_cpa):
+                severidade = "ALTA" if cost >= float(media_cpa) * 1.5 else "MEDIA"
+                ajuste = -25 if severidade == "ALTA" else -15
+                sugestoes_base.append(
+                    {
+                        "dia_semana": dia,
+                        "hora_inicio": hora,
+                        "hora_fim": min(24, hora + 1),
+                        "ajuste_percentual": ajuste,
+                        "severidade": severidade,
+                        "justificativa": (
+                            f"Vale de conversao: custo {cost:.2f} sem leads no slot {dia} {hora:02d}h-{min(24, hora + 1):02d}h."
+                        ),
+                    }
+                )
+                continue
+            if cpa is not None and float(cpa) > float(media_cpa) * 1.3:
+                sugestoes_base.append(
+                    {
+                        "dia_semana": dia,
+                        "hora_inicio": hora,
+                        "hora_fim": min(24, hora + 1),
+                        "ajuste_percentual": -10,
+                        "severidade": "MEDIA",
+                        "justificativa": (
+                            f"CPA do horario ({float(cpa):.2f}) acima da media da campanha ({float(media_cpa):.2f})."
+                        ),
+                    }
+                )
+            elif conv > max(1.0, media_conv_slot * 1.3) and cpa is not None and float(cpa) <= float(media_cpa) * 0.9:
+                sugestoes_base.append(
+                    {
+                        "dia_semana": dia,
+                        "hora_inicio": hora,
+                        "hora_fim": min(24, hora + 1),
+                        "ajuste_percentual": 10,
+                        "severidade": "BAIXA",
+                        "justificativa": (
+                            f"Pico de conversao com eficiencia no slot {dia} {hora:02d}h-{min(24, hora + 1):02d}h."
+                        ),
+                    }
+                )
+
+    sugestoes = [dict(item) for item in sugestoes_base]
+    resumo_ia = ""
+    api_key = (openai_api_key or os.getenv("OPENAI_API_KEY") or "").strip()
+    if api_key:
+        prompt = (
+            "Analise dayparting da campanha e devolva JSON com resumo e sugestoes por dia/horario.\n\n"
+            f"Dados horarios: {json.dumps(horarios, ensure_ascii=False)}\n"
+            f"Media CPA: {round(float(media_cpa or 0.0), 4)}\n"
+            f"Sugestoes base: {json.dumps(sugestoes_base, ensure_ascii=False)}\n\n"
+            "Formato obrigatorio:\n"
+            '{"resumo":"texto","sugestoes":[{"dia_semana":"MONDAY","hora_inicio":8,"hora_fim":18,"ajuste_percentual":10,"severidade":"ALTA|MEDIA|BAIXA","justificativa":"..."}]}'
+        )
+        model = MODEL_ANALYSIS
+        client = AsyncOpenAI(api_key=api_key, timeout=14.0)
+        response = await client.chat.completions.create(
+            model=model,
+            response_format={"type": "json_object"},
+            temperature=0.2,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Voce e especialista em dayparting para Google Ads. "
+                        "Retorne apenas JSON valido."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
+        )
+        _log_modelo_e_tokens("Analise Horarios", model, response, prompt)
+        content = (response.choices[0].message.content or "{}").strip()
+        parsed = json.loads(content)
+        resumo_ia = str(parsed.get("resumo") or "").strip()
+        sugestoes_ia = parsed.get("sugestoes", [])
+        if isinstance(sugestoes_ia, list) and sugestoes_ia:
+            sugestoes = []
+            for item in sugestoes_ia:
+                severidade = str((item or {}).get("severidade", "MEDIA")).strip().upper()
+                if severidade not in {"ALTA", "MEDIA", "BAIXA"}:
+                    severidade = "MEDIA"
+                sugestoes.append(
+                    {
+                        "dia_semana": str((item or {}).get("dia_semana", "UNSPECIFIED")).strip().upper(),
+                        "hora_inicio": int((item or {}).get("hora_inicio", 0) or 0),
+                        "hora_fim": int((item or {}).get("hora_fim", 1) or 1),
+                        "ajuste_percentual": float((item or {}).get("ajuste_percentual", 0.0) or 0.0),
+                        "severidade": severidade,
+                        "justificativa": str((item or {}).get("justificativa", "")).strip(),
+                    }
+                )
+        if not sugestoes:
+            sugestoes = [dict(item) for item in sugestoes_base]
+
+    return {
+        "media_cpa": (round(float(media_cpa), 4) if media_cpa is not None else None),
+        "horarios": horarios,
+        "sugestoes": sugestoes,
+        "resumo_ia": resumo_ia,
+    }

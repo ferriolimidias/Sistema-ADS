@@ -105,6 +105,27 @@ class EvolutionService:
             "response": parsed,
         }
 
+    def enviar_alerta_ai_cleaner_intraday(
+        self,
+        config,
+        numero_destino: str,
+        termos_negativados: int,
+        economia_estimada_brl: str,
+        campanhas_afetadas: list[str] | None = None,
+    ):
+        mensagem = (
+            "🤖 *AI Cleaner - Relatório Intra-day*\n"
+            "A IA acabou de limpar termos de busca nas campanhas ativas.\n"
+            f"*Termos Negativados:* {int(termos_negativados or 0)}\n"
+            f"*Economia Estimada:* {str(economia_estimada_brl or 'R$ 0,00')}\n"
+            f"*Campanhas Afetadas:* {', '.join(campanhas_afetadas or []) or '-'}"
+        )
+        return self.enviar_texto_whatsapp(
+            config=config,
+            numero_destino=numero_destino,
+            mensagem=mensagem,
+        )
+
     def criar_grupo_onboarding(
         self,
         config,

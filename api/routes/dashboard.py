@@ -12,6 +12,8 @@ from sqlalchemy.orm import Session, joinedload, selectinload
 
 from api.utils.audit import registrar_log_safe
 from engines.ai_engine.strategist import (
+    analisar_performance_horarios,
+    analisar_performance_dispositivos,
     analisar_termos_sujos,
     gerar_insight_estrategico,
     montar_dados_performance_reais_por_servico,
@@ -23,7 +25,19 @@ from engines.utils.security import get_current_user, require_admin_user
 from engines.utils.security import generate_temp_password, hash_password
 from engines.utils.evolution_service import EvolutionService
 from models.database import get_db
-from models.schema import AuditLog, Campanha, Cliente, ConversaoVenda, FerrioliConfig, LogOtimizacaoGECO, MetricasDiarias, Usuario, UsuarioRole
+from models.schema import (
+    AuditLog,
+    Campanha,
+    Cliente,
+    ConfiguracaoSistema,
+    ConsumoIA,
+    ConversaoVenda,
+    FerrioliConfig,
+    LogOtimizacaoGECO,
+    MetricasDiarias,
+    Usuario,
+    UsuarioRole,
+)
 
 router = APIRouter(prefix="/admin", dependencies=[Depends(require_admin_user)])
 client_router = APIRouter(prefix="/client", dependencies=[Depends(get_current_user)])
@@ -135,6 +149,21 @@ class NegativarTermosRequest(BaseModel):
     nome_servico: str
     ad_group_id: str
     termos: list[str]
+    periodo_dias: int = 30
+
+
+class AjustarDispositivoRequest(BaseModel):
+    campanha_id: int
+    dispositivo: str
+    ajuste_percentual: float = Field(ge=-90, le=200, description="Ajuste percentual do lance por dispositivo.")
+
+
+class AjustarHorarioRequest(BaseModel):
+    campanha_id: int
+    dia_semana: str
+    hora_inicio: int = Field(ge=0, le=23)
+    hora_fim: int = Field(ge=1, le=24)
+    ajuste_percentual: float = Field(ge=-90, le=200)
 
 
 class ClienteCreateRequest(BaseModel):
@@ -185,6 +214,17 @@ class ConfiguracaoUpdateRequest(BaseModel):
     razao_social: Optional[str] = None
     cnpj: Optional[str] = None
     whatsapp: Optional[str] = None
+
+
+class ConfiguracaoSistemaResponse(BaseModel):
+    id: int
+    intraday_cleaner_enabled: bool
+    admin_whatsapp_number: Optional[str] = None
+
+
+class ConfiguracaoSistemaUpdateRequest(BaseModel):
+    intraday_cleaner_enabled: Optional[bool] = None
+    admin_whatsapp_number: Optional[str] = None
 
 
 def _montar_google_credentials(ferrioli_config: FerrioliConfig) -> dict:
@@ -245,6 +285,21 @@ def _serializar_configuracao(config: FerrioliConfig, cliente_padrao: Optional[Cl
         cnpj=(cliente_padrao.cnpj if cliente_padrao else None),
         whatsapp=(cliente_padrao.whatsapp if cliente_padrao else None),
     )
+
+
+def _obter_ou_criar_configuracao_sistema(db: Session) -> ConfiguracaoSistema:
+    config = db.query(ConfiguracaoSistema).filter(ConfiguracaoSistema.id == 1).first()
+    if config:
+        return config
+    config = ConfiguracaoSistema(
+        id=1,
+        intraday_cleaner_enabled=False,
+        admin_whatsapp_number=None,
+    )
+    db.add(config)
+    db.commit()
+    db.refresh(config)
+    return config
 
 
 @router.get("/configuracoes", response_model=ConfiguracaoResponse)
@@ -320,6 +375,54 @@ def atualizar_configuracoes(
         except Exception:
             pass
     return _serializar_configuracao(config, cliente_padrao)
+
+
+@router.get("/configuracoes-sistema", response_model=ConfiguracaoSistemaResponse)
+def obter_configuracoes_sistema(db: Session = Depends(get_db)):
+    config = _obter_ou_criar_configuracao_sistema(db=db)
+    return ConfiguracaoSistemaResponse(
+        id=config.id,
+        intraday_cleaner_enabled=bool(config.intraday_cleaner_enabled),
+        admin_whatsapp_number=config.admin_whatsapp_number,
+    )
+
+
+@router.put("/configuracoes-sistema", response_model=ConfiguracaoSistemaResponse)
+def atualizar_configuracoes_sistema(
+    payload: ConfiguracaoSistemaUpdateRequest,
+    request: Request,
+    current_user: Usuario = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    config = _obter_ou_criar_configuracao_sistema(db=db)
+    update_data = payload.model_dump(exclude_unset=True)
+    if "admin_whatsapp_number" in update_data and isinstance(update_data["admin_whatsapp_number"], str):
+        update_data["admin_whatsapp_number"] = update_data["admin_whatsapp_number"].strip() or None
+
+    for field_name, field_value in update_data.items():
+        setattr(config, field_name, field_value)
+
+    db.commit()
+    db.refresh(config)
+
+    if update_data:
+        try:
+            registrar_log_safe(
+                db=db,
+                user_id=current_user.id,
+                acao="ALTERAR_CONFIG_SISTEMA",
+                recurso="ConfiguracaoSistema",
+                detalhes={"campos_alterados": sorted(update_data.keys())},
+                request=request,
+            )
+        except Exception:
+            pass
+
+    return ConfiguracaoSistemaResponse(
+        id=config.id,
+        intraday_cleaner_enabled=bool(config.intraday_cleaner_enabled),
+        admin_whatsapp_number=config.admin_whatsapp_number,
+    )
 
 
 @router.get("/clientes", response_model=list[ClienteResponse])
@@ -817,6 +920,187 @@ def _obter_contexto_google_para_campanha(campanha_id: int, db: Session) -> tuple
     return campanha, cliente, config
 
 
+@router.get("/dispositivos/performance")
+def listar_performance_dispositivos(
+    campanha_id: int = Query(...),
+    periodo_dias: int = Query(default=15, ge=1, le=90),
+    db: Session = Depends(get_db),
+):
+    campanha, cliente, config = _obter_contexto_google_para_campanha(campanha_id=campanha_id, db=db)
+    dispositivos = GoogleMetricsCollector().fetch_device_performance(
+        customer_id=cliente.google_customer_id,
+        campaign_id=campanha.plataforma_campanha_id,
+        periodo_dias=periodo_dias,
+        credentials_dict=_montar_google_credentials(config),
+    )
+    analise = asyncio.run(
+        analisar_performance_dispositivos(
+            dados_dispositivos=dispositivos,
+            openai_api_key=config.openai_api_key,
+        )
+    )
+    sugestoes = []
+    for item in (analise.get("sugestoes") or []):
+        sugestoes.append(
+            {
+                "dispositivo": str(item.get("dispositivo", "")).upper(),
+                "ajuste_percentual": float(item.get("ajuste_percentual", 0.0) or 0.0),
+                "justificativa": str(item.get("justificativa", "")).strip(),
+                "severidade": str(item.get("severidade", "MEDIA")).upper(),
+            }
+        )
+    return {
+        "status": "sucesso",
+        "campanha_id": campanha.id,
+        "periodo_dias": periodo_dias,
+        "media_cpa": analise.get("media_cpa"),
+        "dispositivos": analise.get("dispositivos", dispositivos),
+        "sugestoes": sugestoes,
+        "resumo_ia": analise.get("resumo_ia", ""),
+    }
+
+
+@router.post("/dispositivos/ajustar")
+def ajustar_dispositivo(
+    payload: AjustarDispositivoRequest,
+    request: Request,
+    current_user: Usuario = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    campanha, cliente, config = _obter_contexto_google_para_campanha(campanha_id=payload.campanha_id, db=db)
+    launcher = GoogleAdsLauncher()
+    resultado = asyncio.run(
+        launcher.ajustar_lance_dispositivo(
+            customer_id=cliente.google_customer_id,
+            campaign_id=campanha.plataforma_campanha_id,
+            dispositivo=payload.dispositivo,
+            ajuste_percentual=float(payload.ajuste_percentual),
+            credentials_dict=_montar_google_credentials(config),
+        )
+    )
+    if not resultado.get("sucesso"):
+        raise HTTPException(status_code=502, detail=resultado.get("erro") or "Falha ao ajustar lance por dispositivo.")
+
+    try:
+        registrar_log_safe(
+            db=db,
+            user_id=current_user.id,
+            acao="AJUSTE_DISPOSITIVO",
+            recurso=f"Campanha #{campanha.id} - {str(payload.dispositivo).upper()}",
+            detalhes={
+                "campanha_id": campanha.id,
+                "campanha_plataforma_id": campanha.plataforma_campanha_id,
+                "dispositivo": str(payload.dispositivo).upper(),
+                "ajuste_percentual": float(payload.ajuste_percentual),
+                "bid_modifier_anterior": resultado.get("bid_modifier_anterior"),
+                "bid_modifier_novo": resultado.get("bid_modifier_novo"),
+            },
+            request=request,
+        )
+    except Exception:
+        pass
+
+    return {
+        "status": "sucesso",
+        "mensagem": "Ajuste de dispositivo aplicado com sucesso.",
+        "resultado": resultado,
+    }
+
+
+@router.get("/horarios/performance")
+def listar_performance_horarios(
+    campanha_id: int = Query(...),
+    periodo_dias: int = Query(default=15, ge=1, le=90),
+    db: Session = Depends(get_db),
+):
+    campanha, cliente, config = _obter_contexto_google_para_campanha(campanha_id=campanha_id, db=db)
+    horarios = GoogleMetricsCollector().fetch_hourly_performance(
+        customer_id=cliente.google_customer_id,
+        campaign_id=campanha.plataforma_campanha_id,
+        periodo_dias=periodo_dias,
+        credentials_dict=_montar_google_credentials(config),
+    )
+    analise = asyncio.run(
+        analisar_performance_horarios(
+            dados_horarios=horarios,
+            openai_api_key=config.openai_api_key,
+        )
+    )
+    sugestoes = []
+    for item in (analise.get("sugestoes") or []):
+        sugestoes.append(
+            {
+                "dia_semana": str(item.get("dia_semana", "UNSPECIFIED")).upper(),
+                "hora_inicio": int(item.get("hora_inicio", 0) or 0),
+                "hora_fim": int(item.get("hora_fim", 1) or 1),
+                "ajuste_percentual": float(item.get("ajuste_percentual", 0.0) or 0.0),
+                "justificativa": str(item.get("justificativa", "")).strip(),
+                "severidade": str(item.get("severidade", "MEDIA")).upper(),
+            }
+        )
+    return {
+        "status": "sucesso",
+        "campanha_id": campanha.id,
+        "periodo_dias": periodo_dias,
+        "media_cpa": analise.get("media_cpa"),
+        "horarios": analise.get("horarios", horarios),
+        "sugestoes": sugestoes,
+        "resumo_ia": analise.get("resumo_ia", ""),
+    }
+
+
+@router.post("/horarios/ajustar")
+def ajustar_horario(
+    payload: AjustarHorarioRequest,
+    request: Request,
+    current_user: Usuario = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    campanha, cliente, config = _obter_contexto_google_para_campanha(campanha_id=payload.campanha_id, db=db)
+    launcher = GoogleAdsLauncher()
+    resultado = asyncio.run(
+        launcher.ajustar_programacao_horario(
+            customer_id=cliente.google_customer_id,
+            campaign_id=campanha.plataforma_campanha_id,
+            dia_semana=payload.dia_semana,
+            hora_inicio=payload.hora_inicio,
+            hora_fim=payload.hora_fim,
+            ajuste_percentual=float(payload.ajuste_percentual),
+            credentials_dict=_montar_google_credentials(config),
+        )
+    )
+    if not resultado.get("sucesso"):
+        raise HTTPException(status_code=502, detail=resultado.get("erro") or "Falha ao ajustar horario.")
+    try:
+        registrar_log_safe(
+            db=db,
+            user_id=current_user.id,
+            acao="AJUSTE_HORARIO",
+            recurso=(
+                f"Campanha #{campanha.id} - "
+                f"{str(payload.dia_semana).upper()} {int(payload.hora_inicio):02d}h-{int(payload.hora_fim):02d}h"
+            ),
+            detalhes={
+                "campanha_id": campanha.id,
+                "campanha_plataforma_id": campanha.plataforma_campanha_id,
+                "dia_semana": str(payload.dia_semana).upper(),
+                "hora_inicio": int(payload.hora_inicio),
+                "hora_fim": int(payload.hora_fim),
+                "ajuste_percentual": float(payload.ajuste_percentual),
+                "bid_modifier_anterior": resultado.get("bid_modifier_anterior"),
+                "bid_modifier_novo": resultado.get("bid_modifier_novo"),
+            },
+            request=request,
+        )
+    except Exception:
+        pass
+    return {
+        "status": "sucesso",
+        "mensagem": "Ajuste de horario aplicado com sucesso.",
+        "resultado": resultado,
+    }
+
+
 @router.get("/termos-busca")
 def listar_termos_busca(
     campanha_id: int = Query(...),
@@ -962,6 +1246,24 @@ def negativar_termos_busca(
     termos = [str(item or "").strip() for item in (payload.termos or []) if str(item or "").strip()]
     if not termos:
         raise HTTPException(status_code=400, detail="Lista de termos vazia para negativacao.")
+    periodo_ref = max(1, int(payload.periodo_dias or 30))
+    termos_metricas = GoogleMetricsCollector().fetch_search_terms(
+        customer_id=cliente.google_customer_id,
+        campaign_id=campanha.plataforma_campanha_id,
+        periodo_dias=periodo_ref,
+        credentials_dict=_montar_google_credentials(config),
+    )
+    nome_alvo = payload.nome_servico.strip().lower()
+    custo_por_termo: dict[str, float] = {}
+    for item in termos_metricas:
+        if str(item.get("ad_group_id", "")) != str(payload.ad_group_id):
+            continue
+        if nome_alvo not in str(item.get("nome_servico", "")).lower():
+            continue
+        termo_key = str(item.get("search_term", "")).strip().lower()
+        if not termo_key:
+            continue
+        custo_por_termo[termo_key] = float(custo_por_termo.get(termo_key, 0.0) + float(item.get("cost", 0.0) or 0.0))
 
     launcher = GoogleAdsLauncher()
     resultado = asyncio.run(
@@ -988,6 +1290,12 @@ def negativar_termos_busca(
                     "ad_group_id": payload.ad_group_id,
                     "nome_servico": payload.nome_servico,
                     "termo_negativado": termo,
+                    "periodo_dias_ref": periodo_ref,
+                    "custo_periodo_termo": round(float(custo_por_termo.get(str(termo).lower(), 0.0)), 4),
+                    "economia_mensal_estimada": round(
+                        (float(custo_por_termo.get(str(termo).lower(), 0.0)) / float(periodo_ref)) * 30.0,
+                        4,
+                    ),
                 },
                 request=request,
             )
@@ -1223,6 +1531,69 @@ def listar_logs_atividade(
         )
         for log in logs
     ]
+
+
+@router.get("/stats-ia")
+def stats_ia(
+    periodo_dias: int = Query(default=30, ge=1, le=365),
+    db: Session = Depends(get_db),
+):
+    data_inicio = datetime.utcnow() - timedelta(days=max(1, int(periodo_dias)))
+    rows = (
+        db.query(
+            ConsumoIA.modelo,
+            func.coalesce(func.sum(ConsumoIA.tokens_input), 0).label("tokens_input"),
+            func.coalesce(func.sum(ConsumoIA.tokens_output), 0).label("tokens_output"),
+            func.coalesce(func.sum(ConsumoIA.custo_estimado), 0.0).label("custo_estimado"),
+        )
+        .filter(ConsumoIA.timestamp >= data_inicio)
+        .group_by(ConsumoIA.modelo)
+        .all()
+    )
+
+    por_modelo = []
+    custo_total = 0.0
+    tokens_total = 0
+    for row in rows:
+        tokens_in = int(row.tokens_input or 0)
+        tokens_out = int(row.tokens_output or 0)
+        custo = float(row.custo_estimado or 0.0)
+        por_modelo.append(
+            {
+                "modelo": str(row.modelo),
+                "tokens_input": tokens_in,
+                "tokens_output": tokens_out,
+                "tokens_total": tokens_in + tokens_out,
+                "custo_estimado": round(custo, 6),
+            }
+        )
+        custo_total += custo
+        tokens_total += tokens_in + tokens_out
+
+    logs_negativacao = (
+        db.query(AuditLog)
+        .filter(
+            AuditLog.acao == "NEGATIVAR_TERMO",
+            AuditLog.timestamp >= data_inicio,
+        )
+        .all()
+    )
+    economia_ia = 0.0
+    for log in logs_negativacao:
+        detalhes = log.detalhes or {}
+        economia_ia += float(detalhes.get("economia_mensal_estimada", 0.0) or 0.0)
+
+    roi_estimado_limpeza = float(economia_ia - custo_total)
+
+    return {
+        "status": "sucesso",
+        "periodo_dias": periodo_dias,
+        "custo_total_ia": round(float(custo_total), 6),
+        "tokens_total": int(tokens_total),
+        "economia_gerada_ia": round(float(economia_ia), 4),
+        "roi_estimado_limpeza": round(float(roi_estimado_limpeza), 4),
+        "por_modelo": por_modelo,
+    }
 
 
 @router.put("/campanhas/{campanha_id}", response_model=CampanhaResponse)

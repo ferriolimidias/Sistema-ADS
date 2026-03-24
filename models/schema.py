@@ -25,6 +25,14 @@ class FerrioliConfig(Base):
     openai_api_key = Column(String, nullable=False)
 
 
+class ConfiguracaoSistema(Base):
+    __tablename__ = "ConfiguracaoSistema"
+
+    id = Column(Integer, primary_key=True, default=1)
+    intraday_cleaner_enabled = Column(Boolean, default=False, nullable=False)
+    admin_whatsapp_number = Column(String, nullable=True)
+
+
 class Cliente(Base):
     __tablename__ = "Clientes"
 
@@ -78,6 +86,18 @@ class AuditLog(Base):
     timestamp = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
 
     usuario = relationship("Usuario", back_populates="audit_logs")
+
+
+class ConsumoIA(Base):
+    __tablename__ = "ConsumoIA"
+
+    id = Column(Integer, primary_key=True, index=True)
+    modelo = Column(String, nullable=False, index=True)
+    tarefa = Column(String, nullable=False, index=True)
+    tokens_input = Column(Integer, nullable=False, default=0)
+    tokens_output = Column(Integer, nullable=False, default=0)
+    custo_estimado = Column(Float, nullable=False, default=0.0)
+    timestamp = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
 
 
 class Campanha(Base):

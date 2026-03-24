@@ -2,12 +2,17 @@ import asyncio
 import logging
 from datetime import datetime
 
+from api.utils.audit import registrar_log_safe
+from engines.ai_engine.strategist import analisar_termos_sujos
 from engines.google_engine.collector import GoogleCollector
 from engines.google_engine.launcher import GoogleAdsLauncher
+from engines.google_engine.metrics import GoogleMetricsCollector
 from engines.meta_engine.collector import MetaCollector
 from engines.meta_engine.launcher import MetaAdsLauncher
+from engines.utils.evolution_service import EvolutionService
 from models.database import get_db
-from models.schema import Campanha, Cliente, FerrioliConfig, LogOtimizacaoGECO, MetricasDiarias
+from models.schema import Campanha, Cliente, ConfiguracaoSistema, FerrioliConfig, LogOtimizacaoGECO, MetricasDiarias
+from sqlalchemy import or_
 from workers.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -27,6 +32,10 @@ def _montar_meta_credentials(ferrioli_config: FerrioliConfig) -> dict:
     return {
         "meta_bm_token": ferrioli_config.meta_bm_token,
     }
+
+
+def _formatar_brl(valor: float) -> str:
+    return f"R$ {float(valor or 0.0):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 
 def _upsert_metricas_diarias_collector(
@@ -357,6 +366,202 @@ def otimizador_geco_escala_vertical():
                     )
 
         logger.info("GECO finalizou o ciclo de escala vertical das campanhas ativas.")
+    finally:
+        try:
+            next(db_generator)
+        except StopIteration:
+            pass
+
+
+@celery_app.task(name="limpeza_termos_intraday")
+def limpeza_termos_intraday():
+    db_generator = get_db()
+    db = next(db_generator)
+    try:
+        config_sistema = db.query(ConfiguracaoSistema).filter(ConfiguracaoSistema.id == 1).first()
+        if not config_sistema:
+            config_sistema = ConfiguracaoSistema(id=1, intraday_cleaner_enabled=False, admin_whatsapp_number=None)
+            db.add(config_sistema)
+            db.commit()
+            db.refresh(config_sistema)
+
+        if not bool(config_sistema.intraday_cleaner_enabled):
+            logger.info("Limpeza intra-day desativada via painel (ConfiguracaoSistema.intraday_cleaner_enabled).")
+            return "Task desativada via painel"
+
+        ferrioli_config = db.query(FerrioliConfig).first()
+        if not ferrioli_config:
+            logger.warning("Limpeza intra-day abortada: configuracao master nao encontrada.")
+            return {"status": "erro", "motivo": "configuracao_ausente"}
+
+        campanhas_google_ativas = (
+            db.query(Campanha)
+            .filter(
+                Campanha.status == "ATIVA",
+                or_(
+                    Campanha.plataforma == "GOOGLE",
+                    Campanha.tipo.ilike("%GOOGLE%"),
+                ),
+            )
+            .all()
+        )
+        if not campanhas_google_ativas:
+            logger.info("Limpeza intra-day: nenhuma campanha Google ativa.")
+            return {"status": "sucesso", "campanhas_processadas": 0, "termos_negativados": 0}
+
+        google_credentials = _montar_google_credentials(ferrioli_config)
+        collector = GoogleMetricsCollector()
+        launcher = GoogleAdsLauncher()
+        campanhas_afetadas: list[str] = []
+        total_negativados = 0
+        economia_total_estimada = 0.0
+
+        for campanha in campanhas_google_ativas:
+            campanha_plataforma_id = (campanha.plataforma_campanha_id or campanha.id_plataforma or "").strip()
+            if not campanha_plataforma_id:
+                continue
+            cliente = db.query(Cliente).filter(Cliente.id == campanha.cliente_id).first()
+            if not cliente or not cliente.google_customer_id:
+                continue
+
+            termos = collector.fetch_search_terms(
+                customer_id=cliente.google_customer_id,
+                campaign_id=campanha_plataforma_id,
+                periodo_dias=2,
+                credentials_dict=google_credentials,
+            )
+            if not termos:
+                continue
+
+            termos_por_adgroup: dict[tuple[str, str], list[dict]] = {}
+            for termo in termos:
+                ad_group_id = str(termo.get("ad_group_id", "") or "").strip()
+                nome_servico = str(termo.get("nome_servico", "") or "").strip() or "SERVICO"
+                search_term = str(termo.get("search_term", "") or "").strip()
+                if not ad_group_id or not search_term:
+                    continue
+                chave = (ad_group_id, nome_servico)
+                termos_por_adgroup.setdefault(chave, []).append(termo)
+
+            campanha_teve_acao = False
+            for (ad_group_id, nome_servico), termos_grupo in termos_por_adgroup.items():
+                termos_grupo_ordenados = sorted(
+                    termos_grupo,
+                    key=lambda x: float(x.get("cost", 0.0) or 0.0),
+                    reverse=True,
+                )[:120]
+                payload_ia = [
+                    {
+                        "search_term": item.get("search_term"),
+                        "clicks": int(item.get("clicks", 0) or 0),
+                        "cost": float(item.get("cost", 0.0) or 0.0),
+                        "conversions": float(item.get("conversions", 0.0) or 0.0),
+                    }
+                    for item in termos_grupo_ordenados
+                ]
+                if not payload_ia:
+                    continue
+
+                try:
+                    analise = asyncio.run(
+                        analisar_termos_sujos(
+                            termos_lista=payload_ia,
+                            nome_servico=nome_servico,
+                            openai_api_key=ferrioli_config.openai_api_key,
+                        )
+                    )
+                except Exception:
+                    logger.exception(
+                        "Falha na analise de termos intra-day. campanha_id=%s ad_group=%s",
+                        campanha.id,
+                        ad_group_id,
+                    )
+                    continue
+
+                termos_negativar = [
+                    str(item or "").strip()
+                    for item in (analise.get("termos_negativar") or [])
+                    if str(item or "").strip()
+                ]
+                if not termos_negativar:
+                    continue
+
+                resultado = asyncio.run(
+                    launcher.negativar_termos_adgroup(
+                        customer_id=cliente.google_customer_id,
+                        ad_group_id=ad_group_id,
+                        lista_termos=termos_negativar,
+                        credentials_dict=google_credentials,
+                    )
+                )
+                negativados = resultado.get("negativados", []) if resultado.get("sucesso") else []
+                if not negativados:
+                    continue
+
+                campanha_teve_acao = True
+                total_negativados += len(negativados)
+                custos_por_termo = {
+                    str(item.get("search_term", "")).strip().lower(): float(item.get("cost", 0.0) or 0.0)
+                    for item in termos_grupo_ordenados
+                }
+                for termo in negativados:
+                    custo_2d = float(custos_por_termo.get(str(termo).lower(), 0.0))
+                    economia_mensal = (custo_2d / 2.0) * 30.0
+                    economia_total_estimada += economia_mensal
+                    try:
+                        registrar_log_safe(
+                            db=db,
+                            user_id=None,
+                            acao="NEGATIVAR_TERMO",
+                            recurso=f"Campanha #{campanha.id} - {nome_servico}",
+                            detalhes={
+                                "origem": "LIMPEZA_INTRADAY",
+                                "campanha_id": campanha.id,
+                                "campanha_plataforma_id": campanha_plataforma_id,
+                                "ad_group_id": ad_group_id,
+                                "nome_servico": nome_servico,
+                                "termo_negativado": termo,
+                                "periodo_dias_ref": 2,
+                                "custo_periodo_termo": round(custo_2d, 4),
+                                "economia_mensal_estimada": round(economia_mensal, 4),
+                            },
+                            request=None,
+                        )
+                    except Exception:
+                        logger.exception("Falha ao registrar AuditLog do termo negativado intra-day.")
+
+                db.commit()
+
+            if campanha_teve_acao:
+                campanhas_afetadas.append(f"#{campanha.id} {cliente.nome}")
+
+        if total_negativados > 0:
+            admin_number = str(config_sistema.admin_whatsapp_number or "").strip()
+            if admin_number:
+                try:
+                    EvolutionService().enviar_alerta_ai_cleaner_intraday(
+                        config=ferrioli_config,
+                        numero_destino=admin_number,
+                        termos_negativados=total_negativados,
+                        economia_estimada_brl=_formatar_brl(economia_total_estimada),
+                        campanhas_afetadas=campanhas_afetadas,
+                    )
+                except Exception:
+                    logger.exception("Falha ao enviar alerta WhatsApp da limpeza intra-day.")
+
+        logger.info(
+            "Limpeza intra-day finalizada. campanhas=%s negativados=%s economia=%.2f",
+            len(campanhas_google_ativas),
+            total_negativados,
+            economia_total_estimada,
+        )
+        return {
+            "status": "sucesso",
+            "campanhas_processadas": len(campanhas_google_ativas),
+            "termos_negativados": int(total_negativados),
+            "economia_estimada": round(economia_total_estimada, 2),
+            "campanhas_afetadas": campanhas_afetadas,
+        }
     finally:
         try:
             next(db_generator)

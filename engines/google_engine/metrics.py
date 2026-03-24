@@ -147,10 +147,148 @@ class GoogleMetricsCollector:
                 campaign_id_limpo,
             )
             return []
+
+    def fetch_device_performance(
+        self,
+        customer_id: str,
+        campaign_id: str,
+        periodo_dias: int = 15,
+        credentials_dict: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        customer_id_limpo = (customer_id or "").replace("-", "").strip()
+        campaign_id_limpo = (campaign_id or "").strip()
+        dias = max(1, int(periodo_dias or 15))
+        try:
+            if not credentials_dict:
+                raise ValueError("credentials_dict e obrigatorio para consultar campaign_device_view.")
+            client = self._build_google_client(credentials_dict)
+            googleads_service = client.get_service("GoogleAdsService")
+            query = (
+                "SELECT "
+                "segments.device, "
+                "metrics.clicks, "
+                "metrics.impressions, "
+                "metrics.cost_micros, "
+                "metrics.conversions "
+                "FROM campaign_device_view "
+                f"WHERE campaign.id = {campaign_id_limpo} "
+                f"AND segments.date DURING LAST_{dias}_DAYS"
+            )
+            response = googleads_service.search(customer_id=customer_id_limpo, query=query)
+            resultado: dict[str, dict[str, Any]] = {}
+            for row in response:
+                device_raw = str(getattr(row.segments, "device", "") or "").strip().upper() or "UNSPECIFIED"
+                clicks = int(getattr(row.metrics, "clicks", 0) or 0)
+                impressions = int(getattr(row.metrics, "impressions", 0) or 0)
+                cost = float(getattr(row.metrics, "cost_micros", 0) or 0) / 1_000_000.0
+                conversions = float(getattr(row.metrics, "conversions", 0) or 0.0)
+                if device_raw not in resultado:
+                    resultado[device_raw] = {
+                        "device": device_raw,
+                        "clicks": 0,
+                        "impressions": 0,
+                        "cost": 0.0,
+                        "conversions": 0.0,
+                    }
+                resultado[device_raw]["clicks"] += clicks
+                resultado[device_raw]["impressions"] += impressions
+                resultado[device_raw]["cost"] += cost
+                resultado[device_raw]["conversions"] += conversions
+
+            dispositivos = []
+            for item in resultado.values():
+                conv = float(item["conversions"] or 0.0)
+                cost = float(item["cost"] or 0.0)
+                item["cpa"] = (cost / conv) if conv > 0 else None
+                item["ctr"] = (
+                    (float(item["clicks"]) / float(item["impressions"])) * 100.0 if int(item["impressions"] or 0) > 0 else 0.0
+                )
+                item["cost"] = round(cost, 4)
+                item["conversions"] = round(conv, 2)
+                if item["cpa"] is not None:
+                    item["cpa"] = round(float(item["cpa"]), 4)
+                item["ctr"] = round(float(item["ctr"]), 4)
+                dispositivos.append(item)
+            dispositivos.sort(key=lambda d: float(d.get("cost", 0.0)), reverse=True)
+            logger.info(
+                "Device performance coletada. customer_id=%s campaign_id=%s total_devices=%s",
+                customer_id_limpo,
+                campaign_id_limpo,
+                len(dispositivos),
+            )
+            return dispositivos
         except Exception:
             logger.exception(
-                "Falha inesperada no fetch_metrics do Google Ads. customer_id=%s campanha_id=%s",
+                "Falha ao coletar performance por dispositivo. customer_id=%s campaign_id=%s",
                 customer_id_limpo,
-                campanha_id_limpo,
+                campaign_id_limpo,
             )
-            return {"spend": 0.0, "conversions": 0, "cpa": 0.0, "servicos": []}
+            return []
+
+    def fetch_hourly_performance(
+        self,
+        customer_id: str,
+        campaign_id: str,
+        periodo_dias: int = 15,
+        credentials_dict: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        customer_id_limpo = (customer_id or "").replace("-", "").strip()
+        campaign_id_limpo = (campaign_id or "").strip()
+        dias = max(1, int(periodo_dias or 15))
+        try:
+            if not credentials_dict:
+                raise ValueError("credentials_dict e obrigatorio para consultar performance por horario.")
+            client = self._build_google_client(credentials_dict)
+            googleads_service = client.get_service("GoogleAdsService")
+            query = (
+                "SELECT "
+                "segments.hour, "
+                "segments.day_of_week, "
+                "metrics.clicks, "
+                "metrics.cost_micros, "
+                "metrics.conversions "
+                "FROM campaign "
+                f"WHERE campaign.id = {campaign_id_limpo} "
+                f"AND segments.date DURING LAST_{dias}_DAYS"
+            )
+            response = googleads_service.search(customer_id=customer_id_limpo, query=query)
+            agregado: dict[str, dict[str, Any]] = {}
+            for row in response:
+                hora = int(getattr(row.segments, "hour", 0) or 0)
+                dia_semana = str(getattr(row.segments, "day_of_week", "") or "").strip().upper() or "UNSPECIFIED"
+                chave = f"{dia_semana}:{hora}"
+                if chave not in agregado:
+                    agregado[chave] = {
+                        "hour_of_day": hora,
+                        "day_of_week": dia_semana,
+                        "clicks": 0,
+                        "cost": 0.0,
+                        "conversions": 0.0,
+                    }
+                agregado[chave]["clicks"] += int(getattr(row.metrics, "clicks", 0) or 0)
+                agregado[chave]["cost"] += float(getattr(row.metrics, "cost_micros", 0) or 0) / 1_000_000.0
+                agregado[chave]["conversions"] += float(getattr(row.metrics, "conversions", 0) or 0.0)
+            horarios = list(agregado.values())
+            for item in horarios:
+                conv = float(item.get("conversions", 0.0) or 0.0)
+                cost = float(item.get("cost", 0.0) or 0.0)
+                item["cpa"] = (cost / conv) if conv > 0 else None
+                item["cost"] = round(cost, 4)
+                item["conversions"] = round(conv, 2)
+                if item["cpa"] is not None:
+                    item["cpa"] = round(float(item["cpa"]), 4)
+            horarios.sort(key=lambda x: (str(x.get("day_of_week", "")), int(x.get("hour_of_day", 0))))
+            logger.info(
+                "Performance por horario coletada. customer_id=%s campaign_id=%s total_slots=%s",
+                customer_id_limpo,
+                campaign_id_limpo,
+                len(horarios),
+            )
+            return horarios
+        except Exception:
+            logger.exception(
+                "Falha ao coletar performance por horario. customer_id=%s campaign_id=%s",
+                customer_id_limpo,
+                campaign_id_limpo,
+            )
+            return []

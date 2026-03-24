@@ -1,8 +1,11 @@
+import calendar
+from datetime import datetime
 import json
 import logging
+import re
 from typing import Any
 
-from api.utils.ai_config import MODEL_STRATEGY
+from api.utils.ai_config import MODEL_STRATEGY, registrar_consumo_ia
 from openai import AsyncOpenAI
 
 logger = logging.getLogger(__name__)
@@ -18,6 +21,14 @@ class ContentGenerator:
     @classmethod
     def from_ferrioli_config(cls, ferrioli_config: Any):
         return cls(openai_api_key=ferrioli_config.openai_api_key)
+
+    @staticmethod
+    def _contagem_google_ads(texto: str) -> int:
+        valor = str(texto or "")
+        # Google considera o texto padrao dentro dos customizadores.
+        valor = re.sub(r"\{KeyWord:([^}]+)\}", r"\1", valor, flags=re.IGNORECASE)
+        valor = re.sub(r"\{LOCATION\(City\):([^}]+)\}", r"\1", valor, flags=re.IGNORECASE)
+        return len(valor)
 
     @staticmethod
     def _validar_copy_google(data: dict):
@@ -63,9 +74,9 @@ class ContentGenerator:
                 raise ValueError(f"Grupo {idx} sem palavras_chave suficientes.")
             if len(headlines) != 15 or len(descriptions) != 4:
                 raise ValueError(f"Grupo {idx} com quantidade invalida de headlines/descriptions.")
-            if any((not isinstance(item, str)) or len(item) > 30 for item in headlines):
+            if any((not isinstance(item, str)) or ContentGenerator._contagem_google_ads(item) > 30 for item in headlines):
                 raise ValueError(f"Grupo {idx} com headline invalida (max 30).")
-            if any((not isinstance(item, str)) or len(item) > 90 for item in descriptions):
+            if any((not isinstance(item, str)) or ContentGenerator._contagem_google_ads(item) > 90 for item in descriptions):
                 raise ValueError(f"Grupo {idx} com description invalida (max 90).")
             if any((not isinstance(item, str)) or not str(item).strip() for item in palavras_chave):
                 raise ValueError(f"Grupo {idx} com palavra_chave invalida.")
@@ -112,6 +123,37 @@ class ContentGenerator:
                 raise ValueError(f"Conjunto {idx} com campos textuais vazios apos sanitizacao.")
 
     @staticmethod
+    def _aplicar_fallback_customizadores_google(data: dict) -> None:
+        grupos_anuncios = data.get("grupos_anuncios", [])
+        if not isinstance(grupos_anuncios, list):
+            return
+
+        for grupo in grupos_anuncios:
+            if not isinstance(grupo, dict):
+                continue
+            headlines = [str(item).strip() for item in (grupo.get("headlines") or []) if str(item).strip()]
+            descriptions = [str(item).strip() for item in (grupo.get("descriptions") or []) if str(item).strip()]
+
+            has_dki = any("{keyword:" in item.lower() for item in headlines)
+            if not has_dki:
+                fallback_dki = "Aproveite: {KeyWord:Nossos Serviços}"
+                if len(headlines) < 15:
+                    headlines.append(fallback_dki)
+                else:
+                    headlines[-1] = fallback_dki
+
+            has_local = any("{location(city):" in item.lower() for item in (headlines + descriptions))
+            if not has_local:
+                fallback_local = "Atendimento exclusivo em {LOCATION(City):sua região}."
+                if len(descriptions) < 4:
+                    descriptions.append(fallback_local)
+                else:
+                    descriptions[-1] = fallback_local
+
+            grupo["headlines"] = headlines
+            grupo["descriptions"] = descriptions
+
+    @staticmethod
     def _estimar_tokens_por_texto(texto: str) -> int:
         return max(1, int(len(str(texto or "")) / 4))
 
@@ -132,6 +174,13 @@ class ContentGenerator:
                 prompt_est,
                 completion_est,
             )
+            registrar_consumo_ia(
+                db=None,
+                modelo=self.model_strategy,
+                tokens_in=prompt_est,
+                tokens_out=completion_est,
+                tarefa=task,
+            )
             return
         logger.info(
             "[AI][%s] modelo=%s tokens=%s (prompt=%s completion=%s)",
@@ -141,9 +190,19 @@ class ContentGenerator:
             prompt_tokens,
             completion_tokens,
         )
+        registrar_consumo_ia(
+            db=None,
+            modelo=self.model_strategy,
+            tokens_in=int(prompt_tokens or 0),
+            tokens_out=int(completion_tokens or 0),
+            tarefa=task,
+        )
 
     async def gerar_copy_campanha(self, nome_servico: str, detalhes_empresa: str, plataforma: str = "GOOGLE"):
         plataforma_norm = (plataforma or "GOOGLE").upper()
+        hoje = datetime.now()
+        ultimo_dia = calendar.monthrange(hoje.year, hoje.month)[1]
+        data_escassez = f"{hoje.year}-{hoje.month:02d}-{ultimo_dia:02d} 23:59:59"
 
         if plataforma_norm == "META":
             prompt = f"""
@@ -216,6 +275,19 @@ Regras obrigatorias:
 - Nao inclua chaves extras.
 - Nao inclua explicacoes fora do JSON.
 
+REGRAS DE CUSTOMIZACAO DINAMICA (GOOGLE ADS):
+- Voce DEVE usar o recurso de Insercao Dinamica de Palavra-chave em pelo menos uma Headline por STAG.
+- Formato exato: {{KeyWord:Texto Padrão}}.
+- Voce DEVE usar a Insercao de Localizacao em pelo menos uma Headline ou Description, para gerar conexao local.
+- Formato exato: {{LOCATION(City):Sua Cidade}}.
+- REGRA DE LIMITE DE CARACTERES: o Google avalia o tamanho APENAS do texto padrao (o que vem depois dos dois pontos).
+- Exemplo: em {{KeyWord:Apartamento na Planta}}, o Google conta apenas "Apartamento na Planta".
+- Garanta que o texto padrao NUNCA ultrapasse 30 caracteres para Headlines e 90 para Descriptions.
+- IMPORTANTE: as expressoes com chaves {{...}} sao texto comum dentro dos valores e NAO DEVEM quebrar a estrutura JSON.
+- Retorne sempre JSON valido, com essas formulas apenas como strings nos campos de headlines/descriptions.
+- Gatilho de Escassez: Adicione exatamente UMA Description com a contagem regressiva para o fim do mes promocional.
+- Formato: {{COUNTDOWN("{data_escassez}","pt-BR",5)}}.
+
 Servico: {nome_servico}
 Detalhes da empresa: {detalhes_empresa}
 """.strip()
@@ -233,7 +305,7 @@ Detalhes da empresa: {detalhes_empresa}
                     {"role": "user", "content": prompt},
                 ],
             )
-            self._log_modelo_e_tokens("gerar_copy_campanha", response, prompt)
+            self._log_modelo_e_tokens("GECO", response, prompt)
             content = response.choices[0].message.content or "{}"
             data = json.loads(content)
 
@@ -241,6 +313,7 @@ Detalhes da empresa: {detalhes_empresa}
                 self._validar_copy_meta(data)
                 logger.info("Copy de Meta Ads gerada com sucesso para servico=%s", nome_servico)
             else:
+                self._aplicar_fallback_customizadores_google(data)
                 self._validar_copy_google(data)
                 logger.info("Copy de Google Ads gerada com sucesso para servico=%s", nome_servico)
             return data
@@ -292,7 +365,7 @@ Copy gerada: {json.dumps(copy_gerada, ensure_ascii=False)}
                     {"role": "user", "content": prompt},
                 ],
             )
-            self._log_modelo_e_tokens("gerar_landing_page", response, prompt)
+            self._log_modelo_e_tokens("GECO", response, prompt)
             html = (response.choices[0].message.content or "").strip()
             if not html.lower().startswith("<!doctype html") and not html.lower().startswith("<html"):
                 raise ValueError("A OpenAI nao retornou um HTML completo valido.")

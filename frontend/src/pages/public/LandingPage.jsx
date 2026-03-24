@@ -1,13 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useParams, useSearchParams } from "react-router-dom";
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
 export default function LandingPage() {
   const { campanha_id, nome_servico } = useParams();
+  const [searchParams] = useSearchParams();
   const [isLoading, setIsLoading] = useState(true);
   const [data, setData] = useState(null);
   const [error, setError] = useState("");
+  const rawTerm = searchParams.get("utm_term");
 
   useEffect(() => {
     let mounted = true;
@@ -38,6 +40,15 @@ export default function LandingPage() {
     if (!data?.endereco_negocio) return "";
     return `https://www.google.com/maps?q=${encodeURIComponent(data.endereco_negocio)}&output=embed`;
   }, [data?.endereco_negocio]);
+  const formattedTerm = useMemo(() => {
+    if (!rawTerm) return "";
+    const normalized = String(rawTerm).replace(/[+\-_]+/g, " ").trim().toLowerCase();
+    if (!normalized) return "";
+    return normalized
+      .split(/\s+/)
+      .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+      .join(" ");
+  }, [rawTerm]);
   const whatsappLink = data?.whatsapp_link || "#";
 
   if (isLoading) {
@@ -64,6 +75,19 @@ export default function LandingPage() {
     <div className="min-h-screen bg-white text-slate-900">
       <main className="mx-auto max-w-4xl space-y-8 px-4 py-10">
         <section className="space-y-3 text-center">
+          {/* Teste local: http://localhost:5173/lp/ID_DA_LP?utm_term=Teste+De+Mensagem */}
+          {formattedTerm && (
+            <div
+              className="mb-6 inline-block rounded-full px-4 py-2 text-sm font-semibold animate-fade-in-down"
+              style={{
+                backgroundColor: `${(data?.tema?.cor_primaria || "#10b981")}20`,
+                color: data?.tema?.cor_primaria || "#10b981",
+                border: `1px solid ${(data?.tema?.cor_primaria || "#10b981")}40`,
+              }}
+            >
+              ✨ Você buscou por: <span className="font-bold">"{formattedTerm}"</span>
+            </div>
+          )}
           <h1 className="text-3xl font-extrabold leading-tight md:text-4xl">{data.titulo_oferta}</h1>
           <p className="text-sm text-slate-500">Oferta exclusiva para atendimento rapido e local.</p>
         </section>

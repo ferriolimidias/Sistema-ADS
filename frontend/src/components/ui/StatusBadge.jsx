@@ -4,6 +4,9 @@ const STATUS_STYLES = {
   ATIVA: "bg-green-100 text-green-800",
   PAUSADA: "bg-red-100 text-red-700",
   ERRO: "bg-orange-100 text-orange-800",
+  ALTA: "bg-red-100 text-red-700",
+  MEDIA: "bg-amber-100 text-amber-800",
+  BAIXA: "bg-blue-100 text-blue-800",
 };
 
 export default function StatusBadge({ status }) {

@@ -16,7 +16,19 @@ function formatValue(value) {
 export default function OptimizationModal({ isOpen, onClose, onConfirm, data, isLoading = false }) {
   if (!isOpen) return null;
 
-  const acaoLabel = data?.acao === "ESCALAR" ? "Aumentar Verba" : "Pausar Oferta";
+  const acao = String(data?.acao || "").toUpperCase();
+  const acaoLabel =
+    acao === "ESCALAR"
+      ? "Aumentar Verba"
+      : acao === "PAUSAR"
+      ? "Pausar Oferta"
+      : acao === "AJUSTAR_DISPOSITIVO"
+      ? "Ajustar Lance por Dispositivo"
+      : acao === "AJUSTAR_HORARIO"
+      ? "Ajustar Lance por Horário"
+      : "Confirmar Otimizacao";
+  const alvoLabel = acao === "AJUSTAR_DISPOSITIVO" ? "Dispositivo" : acao === "AJUSTAR_HORARIO" ? "Período" : "Servico";
+  const alvoValor = data?.nome_servico || data?.dispositivo || "-";
 
   return (
     <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-900/50 p-4">
@@ -27,6 +39,7 @@ export default function OptimizationModal({ isOpen, onClose, onConfirm, data, is
             <p className="mt-1 text-sm text-slate-500">
               Revise os dados abaixo antes de autorizar a acao no Google/Meta Ads.
             </p>
+            {data?.resumo ? <p className="mt-2 text-sm text-slate-700">{String(data.resumo)}</p> : null}
           </div>
 
           <div className="space-y-3 rounded-lg border border-slate-200 bg-slate-50 p-4">
@@ -35,8 +48,8 @@ export default function OptimizationModal({ isOpen, onClose, onConfirm, data, is
               <span className="font-semibold text-slate-900">{acaoLabel}</span>
             </div>
             <div className="flex items-center justify-between text-sm">
-              <span className="font-medium text-slate-600">Servico</span>
-              <span className="font-semibold text-slate-900">{data?.nome_servico || "-"}</span>
+              <span className="font-medium text-slate-600">{alvoLabel}</span>
+              <span className="font-semibold text-slate-900">{alvoValor}</span>
             </div>
             <div className="flex items-center justify-between text-sm">
               <span className="font-medium text-slate-600">Mudanca</span>

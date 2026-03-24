@@ -26,5 +26,9 @@ celery_app.conf.beat_schedule = {
     "otimizador-geco-escala-vertical-diaria": {
         "task": "workers.geco_tasks.otimizador_geco_escala_vertical",
         "schedule": crontab(minute=0, hour=6),
-    }
+    },
+    "limpeza-termos-intraday-a-cada-3-horas": {
+        "task": "limpeza_termos_intraday",
+        "schedule": crontab(minute=0, hour="*/3"),
+    },
 }

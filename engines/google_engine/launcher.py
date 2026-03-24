@@ -669,3 +669,207 @@ class GoogleAdsLauncher:
                 ad_group_id_limpo,
             )
             return {"sucesso": False, "negativados": [], "falhas": termos}
+
+    async def ajustar_lance_dispositivo(
+        self,
+        customer_id: str,
+        campaign_id: str,
+        dispositivo: str,
+        ajuste_percentual: float,
+        credentials_dict: dict,
+    ) -> dict[str, Any]:
+        customer_id_limpo = (customer_id or "").replace("-", "").strip()
+        campaign_id_limpo = (campaign_id or "").strip()
+        device_norm = str(dispositivo or "").strip().upper()
+        device_map = {
+            "MOBILE": "MOBILE",
+            "DESKTOP": "DESKTOP",
+            "TABLET": "TABLET",
+        }
+        if device_norm not in device_map:
+            return {"sucesso": False, "erro": "Dispositivo invalido. Use MOBILE, DESKTOP ou TABLET."}
+        try:
+            client = self._build_google_client(credentials_dict)
+            googleads_service = client.get_service("GoogleAdsService")
+            campaign_criterion_service = client.get_service("CampaignCriterionService")
+            bid_modifier_novo = max(0.1, 1.0 + (float(ajuste_percentual) / 100.0))
+
+            query = (
+                "SELECT "
+                "campaign_criterion.criterion_id, "
+                "campaign_criterion.resource_name, "
+                "campaign_criterion.bid_modifier, "
+                "campaign_criterion.device.type "
+                "FROM campaign_criterion "
+                f"WHERE campaign.id = {campaign_id_limpo} "
+                "AND campaign_criterion.type = DEVICE"
+            )
+            response = googleads_service.search(customer_id=customer_id_limpo, query=query)
+            criterion_existente = None
+            for row in response:
+                tipo = str(getattr(getattr(row.campaign_criterion, "device", None), "type", "") or "").strip().upper()
+                if tipo == device_norm:
+                    criterion_existente = row.campaign_criterion
+                    break
+
+            operation = client.get_type("CampaignCriterionOperation")
+            bid_modifier_anterior = None
+            if criterion_existente:
+                operation.update.resource_name = criterion_existente.resource_name
+                bid_modifier_anterior = float(getattr(criterion_existente, "bid_modifier", 1.0) or 1.0)
+                operation.update.bid_modifier = float(bid_modifier_novo)
+                client.copy_from(
+                    operation.update_mask,
+                    protobuf_helpers.field_mask(None, operation.update._pb),
+                )
+            else:
+                criterion = operation.create
+                criterion.campaign = client.get_service("CampaignService").campaign_path(customer_id_limpo, campaign_id_limpo)
+                criterion.device.type = getattr(client.enums.DeviceEnum, device_map[device_norm])
+                criterion.bid_modifier = float(bid_modifier_novo)
+
+            campaign_criterion_service.mutate_campaign_criteria(
+                customer_id=customer_id_limpo,
+                operations=[operation],
+            )
+            logger.info(
+                "Ajuste de lance por dispositivo aplicado. customer_id=%s campaign_id=%s dispositivo=%s ajuste=%s%%",
+                customer_id_limpo,
+                campaign_id_limpo,
+                device_norm,
+                ajuste_percentual,
+            )
+            return {
+                "sucesso": True,
+                "dispositivo": device_norm,
+                "ajuste_percentual": float(ajuste_percentual),
+                "bid_modifier_anterior": bid_modifier_anterior,
+                "bid_modifier_novo": float(round(bid_modifier_novo, 4)),
+            }
+        except GoogleAdsException:
+            logger.exception(
+                "GoogleAdsException ao ajustar lance por dispositivo. customer_id=%s campaign_id=%s dispositivo=%s",
+                customer_id_limpo,
+                campaign_id_limpo,
+                device_norm,
+            )
+            return {"sucesso": False, "erro": "GoogleAdsException ao ajustar lance por dispositivo."}
+        except Exception:
+            logger.exception(
+                "Falha ao ajustar lance por dispositivo. customer_id=%s campaign_id=%s dispositivo=%s",
+                customer_id_limpo,
+                campaign_id_limpo,
+                device_norm,
+            )
+            return {"sucesso": False, "erro": "Falha inesperada ao ajustar lance por dispositivo."}
+
+    async def ajustar_programacao_horario(
+        self,
+        customer_id: str,
+        campaign_id: str,
+        dia_semana: str,
+        hora_inicio: int,
+        hora_fim: int,
+        ajuste_percentual: float,
+        credentials_dict: dict,
+    ) -> dict[str, Any]:
+        customer_id_limpo = (customer_id or "").replace("-", "").strip()
+        campaign_id_limpo = (campaign_id or "").strip()
+        dia = str(dia_semana or "").strip().upper()
+        day_map = {
+            "MONDAY": "MONDAY",
+            "TUESDAY": "TUESDAY",
+            "WEDNESDAY": "WEDNESDAY",
+            "THURSDAY": "THURSDAY",
+            "FRIDAY": "FRIDAY",
+            "SATURDAY": "SATURDAY",
+            "SUNDAY": "SUNDAY",
+        }
+        if dia not in day_map:
+            return {"sucesso": False, "erro": "Dia da semana invalido para ajuste de horario."}
+        start_hour = max(0, min(23, int(hora_inicio)))
+        end_hour = max(1, min(24, int(hora_fim)))
+        if end_hour <= start_hour:
+            return {"sucesso": False, "erro": "Faixa de horario invalida."}
+        try:
+            client = self._build_google_client(credentials_dict)
+            googleads_service = client.get_service("GoogleAdsService")
+            campaign_criterion_service = client.get_service("CampaignCriterionService")
+            bid_modifier_novo = max(0.1, 1.0 + (float(ajuste_percentual) / 100.0))
+
+            query = (
+                "SELECT "
+                "campaign_criterion.resource_name, "
+                "campaign_criterion.bid_modifier, "
+                "campaign_criterion.ad_schedule.day_of_week, "
+                "campaign_criterion.ad_schedule.start_hour, "
+                "campaign_criterion.ad_schedule.end_hour, "
+                "campaign_criterion.ad_schedule.start_minute, "
+                "campaign_criterion.ad_schedule.end_minute "
+                "FROM campaign_criterion "
+                f"WHERE campaign.id = {campaign_id_limpo} "
+                "AND campaign_criterion.type = AD_SCHEDULE"
+            )
+            response = googleads_service.search(customer_id=customer_id_limpo, query=query)
+            criterio_existente = None
+            for row in response:
+                ad_schedule = getattr(row.campaign_criterion, "ad_schedule", None)
+                if not ad_schedule:
+                    continue
+                dia_row = str(getattr(ad_schedule, "day_of_week", "") or "").strip().upper()
+                h_ini = int(getattr(ad_schedule, "start_hour", -1) or -1)
+                h_fim = int(getattr(ad_schedule, "end_hour", -1) or -1)
+                if dia_row == dia and h_ini == start_hour and h_fim == end_hour:
+                    criterio_existente = row.campaign_criterion
+                    break
+
+            operation = client.get_type("CampaignCriterionOperation")
+            bid_modifier_anterior = None
+            if criterio_existente:
+                operation.update.resource_name = criterio_existente.resource_name
+                bid_modifier_anterior = float(getattr(criterio_existente, "bid_modifier", 1.0) or 1.0)
+                operation.update.bid_modifier = float(bid_modifier_novo)
+                client.copy_from(
+                    operation.update_mask,
+                    protobuf_helpers.field_mask(None, operation.update._pb),
+                )
+            else:
+                criterion = operation.create
+                criterion.campaign = client.get_service("CampaignService").campaign_path(customer_id_limpo, campaign_id_limpo)
+                criterion.ad_schedule.day_of_week = getattr(client.enums.DayOfWeekEnum, day_map[dia])
+                criterion.ad_schedule.start_hour = int(start_hour)
+                criterion.ad_schedule.end_hour = int(end_hour)
+                criterion.ad_schedule.start_minute = client.enums.MinuteOfHourEnum.ZERO
+                criterion.ad_schedule.end_minute = client.enums.MinuteOfHourEnum.ZERO
+                criterion.bid_modifier = float(bid_modifier_novo)
+
+            campaign_criterion_service.mutate_campaign_criteria(
+                customer_id=customer_id_limpo,
+                operations=[operation],
+            )
+            logger.info(
+                "Ajuste de programacao horario aplicado. customer_id=%s campaign_id=%s dia=%s faixa=%s-%s ajuste=%s%%",
+                customer_id_limpo,
+                campaign_id_limpo,
+                dia,
+                start_hour,
+                end_hour,
+                ajuste_percentual,
+            )
+            return {
+                "sucesso": True,
+                "dia_semana": dia,
+                "hora_inicio": start_hour,
+                "hora_fim": end_hour,
+                "ajuste_percentual": float(ajuste_percentual),
+                "bid_modifier_anterior": bid_modifier_anterior,
+                "bid_modifier_novo": float(round(bid_modifier_novo, 4)),
+            }
+        except Exception:
+            logger.exception(
+                "Falha ao ajustar programacao de horario. customer_id=%s campaign_id=%s dia=%s",
+                customer_id_limpo,
+                campaign_id_limpo,
+                dia,
+            )
+            return {"sucesso": False, "erro": "Falha inesperada ao ajustar programacao de horario."}
