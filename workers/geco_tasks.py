@@ -117,7 +117,15 @@ def otimizador_geco_cortar_sangria():
             logger.warning("GECO abortado: nenhuma configuracao master encontrada em Ferrioli_Config.")
             return
 
-        campanhas_ativas = db.query(Campanha).filter(Campanha.status == "ATIVA").all()
+        campanhas_ativas = (
+            db.query(Campanha)
+            .join(Cliente, Campanha.cliente_id == Cliente.id)
+            .filter(
+                Campanha.status == "ATIVA",
+                Cliente.status_ativo.is_(True),
+            )
+            .all()
+        )
         for campanha in campanhas_ativas:
             logger.info(
                 "Iniciando analise GECO para a campanha ID: %s. Verificando limite de CPA e regras de escala.",
@@ -246,8 +254,10 @@ def otimizador_geco_escala_vertical():
 
         campanhas_elegiveis = (
             db.query(Campanha)
+            .join(Cliente, Campanha.cliente_id == Cliente.id)
             .filter(
                 Campanha.status == "ATIVA",
+                Cliente.status_ativo.is_(True),
                 Campanha.cpa_alvo.isnot(None),
                 Campanha.orcamento_diario > 0,
             )
@@ -396,8 +406,10 @@ def limpeza_termos_intraday():
 
         campanhas_google_ativas = (
             db.query(Campanha)
+            .join(Cliente, Campanha.cliente_id == Cliente.id)
             .filter(
                 Campanha.status == "ATIVA",
+                Cliente.status_ativo.is_(True),
                 or_(
                     Campanha.plataforma == "GOOGLE",
                     Campanha.tipo.ilike("%GOOGLE%"),

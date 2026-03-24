@@ -2,11 +2,11 @@ import re
 import unicodedata
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from models.database import get_db
-from models.schema import Campanha, MidiaCampanha
+from models.schema import Campanha, Cliente, MidiaCampanha
 
 router = APIRouter(tags=["public"])
 
@@ -39,39 +39,40 @@ def _montar_whatsapp_link(numero_whatsapp: str | None, nome_servico: str, campan
     return f"https://wa.me/{numero_limpo}?text={quote(mensagem)}"
 
 
-@router.get("/lp/{campanha_id}/{nome_servico}")
-def obter_landing_data(campanha_id: int, nome_servico: str, db: Session = Depends(get_db)):
-    campanha = db.query(Campanha).filter(Campanha.id == campanha_id).first()
-    if not campanha:
-        raise HTTPException(status_code=404, detail="Campanha nao encontrada.")
-
+def _montar_payload_landing(campanha: Campanha, cliente: Cliente | None, db: Session, nome_servico: str | None = None):
     copy_gerada = campanha.copy_gerada or {}
     grupos_google = copy_gerada.get("grupos_anuncios", []) or []
     conjuntos_meta = copy_gerada.get("conjuntos_anuncios", []) or []
-    alvo = _normalizar_nome_servico(nome_servico)
 
     grupo_match = None
-    for item in grupos_google:
-        if _normalizar_nome_servico(item.get("nome_servico", "")) == alvo:
-            grupo_match = item
-            break
-
     conjunto_match = None
-    if not grupo_match:
-        for item in conjuntos_meta:
-            if _normalizar_nome_servico(item.get("nome_publico", "")) == alvo:
-                conjunto_match = item
+    alvo = _normalizar_nome_servico(nome_servico) if nome_servico else None
+
+    if alvo:
+        for item in grupos_google:
+            if _normalizar_nome_servico(item.get("nome_servico", "")) == alvo:
+                grupo_match = item
                 break
+
+        if not grupo_match:
+            for item in conjuntos_meta:
+                if _normalizar_nome_servico(item.get("nome_publico", "")) == alvo:
+                    conjunto_match = item
+                    break
+    else:
+        grupo_match = grupos_google[0] if grupos_google else None
+        conjunto_match = conjuntos_meta[0] if conjuntos_meta else None
 
     if not grupo_match and not conjunto_match:
         raise HTTPException(status_code=404, detail="Servico nao encontrado na campanha.")
 
-    midias = db.query(MidiaCampanha).filter(MidiaCampanha.campanha_id == campanha_id).all()
+    midias = db.query(MidiaCampanha).filter(MidiaCampanha.campanha_id == campanha.id).all()
     midia_match = None
-    for midia in midias:
-        if _normalizar_nome_servico(midia.nome_servico or "") == alvo:
-            midia_match = midia
-            break
+    if alvo:
+        for midia in midias:
+            if _normalizar_nome_servico(midia.nome_servico or "") == alvo:
+                midia_match = midia
+                break
     if not midia_match and midias:
         midia_match = midias[0]
 
@@ -82,13 +83,23 @@ def obter_landing_data(campanha_id: int, nome_servico: str, db: Session = Depend
         titulo_oferta = (conjunto_match.get("titulo") or [""])[0]
         texto_vendas = (conjunto_match.get("texto_principal") or [""])[0]
 
-    cliente = campanha.cliente
     nome_servico_mensagem = (
         (grupo_match.get("nome_servico") if grupo_match else None)
         or (conjunto_match.get("nome_publico") if conjunto_match else None)
-        or nome_servico
+        or (nome_servico or "")
     )
+
+    tema = None
+    if isinstance(copy_gerada.get("tema"), dict):
+        tema = copy_gerada.get("tema")
+    elif isinstance(campanha.assets_adicionais, dict) and isinstance(campanha.assets_adicionais.get("tema"), dict):
+        tema = campanha.assets_adicionais.get("tema")
+
     return {
+        "cliente_id": campanha.cliente_id,
+        "campanha_id": campanha.id,
+        "copy_gerada": copy_gerada,
+        "tema": tema,
         "nome_cliente": cliente.nome if cliente else "",
         "razao_social": cliente.razao_social if cliente else None,
         "cnpj": cliente.cnpj if cliente else None,
@@ -98,7 +109,38 @@ def obter_landing_data(campanha_id: int, nome_servico: str, db: Session = Depend
         "url_imagem": _montar_url_publica_midia(midia_match.caminho_arquivo if midia_match else None),
         "whatsapp_link": _montar_whatsapp_link(
             numero_whatsapp=(cliente.whatsapp if cliente else None),
-            nome_servico=str(nome_servico_mensagem),
+            nome_servico=str(nome_servico_mensagem or "Atendimento"),
             campanha_id=campanha.id,
         ),
     }
+
+
+@router.get("/lp/{campanha_id}/{nome_servico}")
+def obter_landing_data(campanha_id: int, nome_servico: str, db: Session = Depends(get_db)):
+    campanha = db.query(Campanha).filter(Campanha.id == campanha_id).first()
+    if not campanha:
+        raise HTTPException(status_code=404, detail="Campanha nao encontrada.")
+    cliente = campanha.cliente
+    return _montar_payload_landing(campanha=campanha, cliente=cliente, db=db, nome_servico=nome_servico)
+
+
+@router.get("/public/resolve-host")
+def resolver_host_publico(host: str = Query(...), db: Session = Depends(get_db)):
+    host_limpo = str(host or "").strip().lower()
+    if not host_limpo:
+        raise HTTPException(status_code=400, detail="Parametro host e obrigatorio.")
+
+    cliente = db.query(Cliente).filter(Cliente.dominio_personalizado == host_limpo).first()
+    if not cliente:
+        raise HTTPException(status_code=404, detail="Cliente nao encontrado para este host.")
+
+    campanha = (
+        db.query(Campanha)
+        .filter(Campanha.cliente_id == cliente.id, Campanha.status == "ATIVA")
+        .order_by(Campanha.id.desc())
+        .first()
+    )
+    if not campanha:
+        raise HTTPException(status_code=404, detail="Nenhuma campanha ativa encontrada para este cliente.")
+
+    return _montar_payload_landing(campanha=campanha, cliente=cliente, db=db, nome_servico=None)

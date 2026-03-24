@@ -21,6 +21,7 @@ from engines.ai_engine.strategist import (
 from engines.google_engine.launcher import GoogleAdsLauncher
 from engines.google_engine.metrics import GoogleMetricsCollector
 from engines.meta_engine.launcher import MetaAdsLauncher
+from engines.utils.cloudflare_service import CloudflareService
 from engines.utils.security import get_current_user, require_admin_user
 from engines.utils.security import generate_temp_password, hash_password
 from engines.utils.evolution_service import EvolutionService
@@ -54,6 +55,7 @@ class ClienteResponse(BaseModel):
     whatsapp_group_jid: Optional[str] = None
     google_customer_id: Optional[str] = None
     meta_ad_account_id: Optional[str] = None
+    dominio_personalizado: Optional[str] = None
     status_ativo: bool
 
 
@@ -164,6 +166,10 @@ class AjustarHorarioRequest(BaseModel):
     hora_inicio: int = Field(ge=0, le=23)
     hora_fim: int = Field(ge=1, le=24)
     ajuste_percentual: float = Field(ge=-90, le=200)
+
+
+class ProvisionarDominioRequest(BaseModel):
+    slug: str
 
 
 class ClienteCreateRequest(BaseModel):
@@ -439,10 +445,81 @@ def listar_clientes(db: Session = Depends(get_db)):
             whatsapp_group_jid=cliente.whatsapp_group_jid,
             google_customer_id=cliente.google_customer_id,
             meta_ad_account_id=cliente.meta_ad_account_id,
+            dominio_personalizado=cliente.dominio_personalizado,
             status_ativo=cliente.status_ativo,
         )
         for cliente in clientes
     ]
+
+
+@router.post("/infra/provisionar-dominio/{cliente_id}")
+def provisionar_dominio_cliente(
+    cliente_id: int,
+    payload: ProvisionarDominioRequest,
+    request: Request,
+    current_user: Usuario = Depends(require_admin_user),
+    db: Session = Depends(get_db),
+):
+    cliente = db.query(Cliente).filter(Cliente.id == cliente_id).first()
+    if not cliente:
+        raise HTTPException(status_code=404, detail="Cliente nao encontrado.")
+
+    config = db.query(FerrioliConfig).first()
+    if not config:
+        raise HTTPException(status_code=500, detail="Configuracao master nao encontrada.")
+
+    slug = str(payload.slug or "").strip().lower()
+    if not slug:
+        raise HTTPException(status_code=400, detail="Slug obrigatorio para provisionar dominio.")
+
+    try:
+        cf_result = CloudflareService().criar_subdominio_cname(slug=slug, config=config)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Falha ao criar DNS na Cloudflare: {exc}") from exc
+
+    status_code = int(cf_result.get("status_code", 500))
+    payload_cf = cf_result.get("payload", {})
+    if status_code >= 400 or not bool((payload_cf or {}).get("success", True)):
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "mensagem": "Cloudflare retornou erro ao provisionar dominio.",
+                "cloudflare_status_code": status_code,
+                "cloudflare_payload": payload_cf,
+            },
+        )
+
+    resposta_cf = payload_cf if isinstance(payload_cf, dict) else {}
+    zone_name = str((resposta_cf.get("result", {}) or {}).get("zone_name", "dominio.com")).strip() or "dominio.com"
+    dominio_final = f"{slug}.{zone_name}"
+    cliente.dominio_personalizado = dominio_final
+    db.commit()
+    db.refresh(cliente)
+
+    try:
+        registrar_log_safe(
+            db=db,
+            user_id=current_user.id,
+            acao="PROVISIONAR_DOMINIO",
+            recurso=f"Cliente #{cliente.id}",
+            detalhes={
+                "slug": slug,
+                "dominio_personalizado": dominio_final,
+                "cloudflare_status_code": status_code,
+            },
+            request=request,
+        )
+    except Exception:
+        pass
+
+    return {
+        "status": "sucesso",
+        "cliente_id": cliente.id,
+        "dominio_personalizado": dominio_final,
+        "cloudflare": cf_result,
+    }
 
 
 @router.post("/clientes")
@@ -537,6 +614,7 @@ def criar_cliente(
             "whatsapp_group_jid": cliente.whatsapp_group_jid,
             "google_customer_id": cliente.google_customer_id,
             "meta_ad_account_id": cliente.meta_ad_account_id,
+            "dominio_personalizado": cliente.dominio_personalizado,
             "status_ativo": cliente.status_ativo,
         },
         "warning": warning,

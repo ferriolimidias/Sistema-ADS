@@ -17,9 +17,24 @@ export default function LandingPage() {
       try {
         setIsLoading(true);
         setError("");
-        const response = await fetch(
-          `${API_BASE_URL}/lp/${campanha_id}/${encodeURIComponent(nome_servico || "")}`,
-        );
+
+        const campanhaIdParam = String(campanha_id || "").trim();
+        const nomeServicoParam = String(nome_servico || "").trim();
+        const currentHost = String(window.location.hostname || "").trim().toLowerCase();
+        const shouldResolveHost =
+          currentHost !== "painel.ferriolimidias.com.br" &&
+          currentHost !== "localhost" &&
+          !campanhaIdParam;
+
+        const endpoint = shouldResolveHost
+          ? `${API_BASE_URL}/public/resolve-host?host=${encodeURIComponent(currentHost)}`
+          : `${API_BASE_URL}/lp/${campanhaIdParam}/${encodeURIComponent(nomeServicoParam)}`;
+
+        if (!shouldResolveHost && (!campanhaIdParam || !nomeServicoParam)) {
+          throw new Error("URL da campanha invalida.");
+        }
+
+        const response = await fetch(endpoint);
         if (!response.ok) throw new Error("Falha ao carregar oferta.");
         const payload = await response.json();
         if (mounted) setData(payload);

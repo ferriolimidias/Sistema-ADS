@@ -1,12 +1,13 @@
 import hashlib
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends
+from fastapi import APIRouter, BackgroundTasks, Depends, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from api.utils.audit import registrar_log_safe
 from models.database import get_db
 from models.schema import Campanha, Cliente, ConversaoAgenteSO, FerrioliConfig, MetricasDiarias
 from engines.utils.evolution_service import EvolutionService
@@ -183,3 +184,54 @@ def registrar_conversao_agenteso(
             )
 
     return {"status": "sucesso", "mensagem": "Conversão registrada"}
+
+
+@router.post("/asaas")
+async def asaas_webhook(request: Request, db: Session = Depends(get_db)):
+    try:
+        payload = await request.json()
+    except Exception:
+        return {"status": "error", "message": "Invalid JSON"}
+
+    evento = payload.get("event")
+    payment = payload.get("payment") or {}
+    asaas_customer_id = payment.get("customer")
+
+    if not evento or not asaas_customer_id:
+        return {"status": "ignored", "message": "No event or customer id"}
+
+    cliente = db.query(Cliente).filter(Cliente.asaas_customer_id == asaas_customer_id).first()
+    if not cliente:
+        return {"status": "ignored", "message": "Customer not found"}
+
+    if evento in ["PAYMENT_RECEIVED", "PAYMENT_CONFIRMED"]:
+        cliente.status_ativo = True
+        hoje = datetime.utcnow()
+        if not cliente.data_vencimento_licenca or cliente.data_vencimento_licenca < hoje:
+            cliente.data_vencimento_licenca = hoje + timedelta(days=30)
+        else:
+            cliente.data_vencimento_licenca = cliente.data_vencimento_licenca + timedelta(days=30)
+
+        db.commit()
+        registrar_log_safe(
+            db=db,
+            user_id=None,
+            acao="LICENCA_RENOVADA",
+            recurso=f"Cliente #{cliente.id}",
+            detalhes={"asaas_payment_id": payment.get("id")},
+            request=request,
+        )
+
+    elif evento == "PAYMENT_OVERDUE":
+        cliente.status_ativo = False
+        db.commit()
+        registrar_log_safe(
+            db=db,
+            user_id=None,
+            acao="LICENCA_BLOQUEADA",
+            recurso=f"Cliente #{cliente.id} por Inadimplencia",
+            detalhes={"asaas_payment_id": payment.get("id")},
+            request=request,
+        )
+
+    return {"status": "success", "event": evento}

@@ -23,6 +23,9 @@ class FerrioliConfig(Base):
     evolution_api_key = Column(String, nullable=True)
     evolution_instance_name = Column(String, nullable=True)
     openai_api_key = Column(String, nullable=False)
+    cloudflare_api_token = Column(String, nullable=True)
+    cloudflare_zone_id = Column(String, nullable=True)
+    cloudflare_cname_target = Column(String, nullable=True)
 
 
 class ConfiguracaoSistema(Base):
@@ -45,6 +48,9 @@ class Cliente(Base):
     google_customer_id = Column(String, nullable=True)
     meta_ad_account_id = Column(String, nullable=True)
     status_ativo = Column(Boolean, default=True, nullable=False)
+    dominio_personalizado = Column(String, nullable=True)
+    asaas_customer_id = Column(String, nullable=True, unique=True, index=True)
+    data_vencimento_licenca = Column(DateTime, nullable=True, index=True)
 
     campanhas = relationship("Campanha", back_populates="cliente", cascade="all, delete-orphan")
     usuario = relationship("Usuario", back_populates="cliente", uselist=False)

@@ -22,6 +22,8 @@ export default function Configuracoes() {
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [isCreatingClient, setIsCreatingClient] = useState(false);
+  const [isLoadingClientes, setIsLoadingClientes] = useState(true);
+  const [provisioningClienteId, setProvisioningClienteId] = useState(null);
   const [formErrors, setFormErrors] = useState({});
   const [novoClienteErrors, setNovoClienteErrors] = useState({});
   const [isLoadingStatsIA, setIsLoadingStatsIA] = useState(true);
@@ -51,6 +53,7 @@ export default function Configuracoes() {
     intraday_cleaner_enabled: false,
     admin_whatsapp_number: "",
   });
+  const [clientes, setClientes] = useState([]);
 
   function updateField(field, value) {
     setFormData((prev) => ({ ...prev, [field]: value }));
@@ -87,16 +90,20 @@ export default function Configuracoes() {
       try {
         setIsLoading(true);
         setIsLoadingStatsIA(true);
-        const [configResponse, statsResponse, sistemaResponse] = await Promise.all([
+        setIsLoadingClientes(true);
+        const [configResponse, statsResponse, sistemaResponse, clientesResponse] = await Promise.all([
           authFetch(`${API_BASE_URL}/admin/configuracoes`),
           authFetch(`${API_BASE_URL}/admin/stats-ia?periodo_dias=30`),
           authFetch(`${API_BASE_URL}/admin/configuracoes-sistema`),
+          authFetch(`${API_BASE_URL}/admin/clientes`),
         ]);
         if (!configResponse.ok) throw new Error("Falha ao carregar configuracoes.");
         if (!sistemaResponse.ok) throw new Error("Falha ao carregar configuracoes de sistema.");
+        if (!clientesResponse.ok) throw new Error("Falha ao carregar clientes.");
         const payload = await configResponse.json();
         const payloadStats = statsResponse.ok ? await statsResponse.json() : null;
         const payloadSistema = await sistemaResponse.json();
+        const payloadClientes = await clientesResponse.json();
         if (mounted) {
           setFormData({
             razao_social: payload.razao_social || "",
@@ -117,6 +124,7 @@ export default function Configuracoes() {
             intraday_cleaner_enabled: Boolean(payloadSistema?.intraday_cleaner_enabled),
             admin_whatsapp_number: String(payloadSistema?.admin_whatsapp_number || ""),
           });
+          setClientes(Array.isArray(payloadClientes) ? payloadClientes : []);
         }
       } catch (error) {
         console.error(error);
@@ -125,6 +133,7 @@ export default function Configuracoes() {
         if (mounted) {
           setIsLoading(false);
           setIsLoadingStatsIA(false);
+          setIsLoadingClientes(false);
         }
       }
     })();
@@ -228,11 +237,52 @@ export default function Configuracoes() {
         criar_grupo: false,
         logo_url: "",
       });
+      if (payload?.cliente?.id) {
+        setClientes((prev) => [payload.cliente, ...prev]);
+      }
     } catch (error) {
       console.error(error);
       toast.error(error?.message || "Erro ao criar cliente.");
     } finally {
       setIsCreatingClient(false);
+    }
+  }
+
+  async function handleProvisionarDominio(clienteId) {
+    const slugDigitado = window.prompt("Digite o slug para o subdominio (ex: clinica-sorriso):");
+    const slug = String(slugDigitado || "").trim().toLowerCase();
+    if (!slug) return;
+
+    try {
+      setProvisioningClienteId(clienteId);
+      const response = await authFetch(`${API_BASE_URL}/admin/infra/provisionar-dominio/${clienteId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ slug }),
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        const detail = payload?.detail;
+        const errorMessage = typeof detail === "string" ? detail : detail?.mensagem || "Falha ao provisionar dominio.";
+        throw new Error(errorMessage);
+      }
+
+      toast.success(`Dominio provisionado: ${payload?.dominio_personalizado || `${slug}`}`);
+      setClientes((prev) =>
+        prev.map((cliente) =>
+          cliente.id === clienteId
+            ? {
+                ...cliente,
+                dominio_personalizado: payload?.dominio_personalizado || cliente.dominio_personalizado || null,
+              }
+            : cliente
+        )
+      );
+    } catch (error) {
+      console.error(error);
+      toast.error(error?.message || "Erro ao provisionar dominio.");
+    } finally {
+      setProvisioningClienteId(null);
     }
   }
 
@@ -370,6 +420,45 @@ export default function Configuracoes() {
               </Button>
             </div>
           </form>
+        </Card>
+
+        <Card className="mt-6">
+          <FormSection
+            title="Provisionamento de Dominio (Cloudflare)"
+            description="Dispare a criacao de subdominio por cliente diretamente pela API."
+          >
+            <div className="space-y-3">
+              {isLoadingClientes ? (
+                <p className="text-sm text-slate-500">Carregando clientes...</p>
+              ) : clientes.length === 0 ? (
+                <p className="text-sm text-slate-500">Nenhum cliente cadastrado.</p>
+              ) : (
+                clientes.map((cliente) => (
+                  <div
+                    key={cliente.id}
+                    className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-slate-50 p-4 md:flex-row md:items-center md:justify-between"
+                  >
+                    <div>
+                      <p className="text-sm font-semibold text-slate-900">{cliente.nome}</p>
+                      <p className="text-xs text-slate-500">ID: {cliente.id}</p>
+                      <p className="mt-1 text-xs text-slate-600">
+                        Dominio atual: {cliente.dominio_personalizado || "Nao provisionado"}
+                      </p>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      isLoading={provisioningClienteId === cliente.id}
+                      onClick={() => handleProvisionarDominio(cliente.id)}
+                    >
+                      Provisionar Dominio (Cloudflare)
+                    </Button>
+                  </div>
+                ))
+              )}
+            </div>
+          </FormSection>
         </Card>
 
         <Card className="mt-6">
