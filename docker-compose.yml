@@ -2,6 +2,7 @@ services:
   db:
     image: postgres:15
     container_name: ferrioli_db
+    restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
@@ -10,43 +11,137 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-ferrioli_traffic}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - ads_network
 
   redis:
     image: redis:alpine
     container_name: ferrioli_redis
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-America/Sao_Paulo}
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks:
+      - ads_network
 
   api:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: ferrioli_api
-    depends_on:
-      - db
-      - redis
+    restart: unless-stopped
+    command: uvicorn main:app --host 0.0.0.0 --port 8000
     env_file:
       - .env
+    environment:
+      APP_ENV: ${APP_ENV:-production}
+      PYTHONUNBUFFERED: "1"
+      TZ: ${TZ:-America/Sao_Paulo}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-ferrioli_traffic}
+      POSTGRES_HOST: ${POSTGRES_HOST:-db}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     ports:
       - "8000:8000"
+    networks:
+      - ads_network
 
   celery_worker:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ferrioli_celery_worker
+    restart: unless-stopped
     command: celery -A workers.celery_app worker --loglevel=info
-    depends_on:
-      - db
-      - redis
     env_file:
       - .env
+    environment:
+      APP_ENV: ${APP_ENV:-production}
+      PYTHONUNBUFFERED: "1"
+      TZ: ${TZ:-America/Sao_Paulo}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-ferrioli_traffic}
+      POSTGRES_HOST: ${POSTGRES_HOST:-db}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - ads_network
 
   celery_beat:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ferrioli_celery_beat
+    restart: unless-stopped
     command: celery -A workers.celery_app beat --loglevel=info
-    depends_on:
-      - db
-      - redis
     env_file:
       - .env
+    environment:
+      APP_ENV: ${APP_ENV:-production}
+      PYTHONUNBUFFERED: "1"
+      TZ: ${TZ:-America/Sao_Paulo}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-ferrioli_traffic}
+      POSTGRES_HOST: ${POSTGRES_HOST:-db}
+      POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - ads_network
+
+  frontend:
+    image: nginx:alpine
+    container_name: ferrioli_frontend
+    restart: unless-stopped
+    environment:
+      VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
+      TZ: ${TZ:-America/Sao_Paulo}
+    volumes:
+      - ./public:/usr/share/nginx/html:ro
+    ports:
+      - "3000:80"
+    depends_on:
+      - api
+    networks:
+      - ads_network
 
 volumes:
   postgres_data:
+
+networks:
+  ads_network:
+    driver: bridge
