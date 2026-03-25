@@ -40,6 +40,7 @@ export default function Navbar() {
             {role === "ADMIN" ? (
               <>
                 <NavItem to="/admin/campanhas/nova" label="Nova Campanha" active={location.pathname === "/admin/campanhas/nova"} />
+                <NavItem to="/admin/clientes" label="Clientes" active={location.pathname === "/admin/clientes"} />
                 <NavItem to="/admin/configuracoes" label="Configuracoes" active={location.pathname === "/admin/configuracoes"} />
                 <NavItem to="/admin/limpeza-termos" label="Limpeza de Termos" active={location.pathname === "/admin/limpeza-termos"} />
                 <NavItem to="/admin/logs" label="Logs de Atividade" active={location.pathname === "/admin/logs"} />

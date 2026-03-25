@@ -21,26 +21,28 @@ export default function Configuracoes() {
   const toast = useToast();
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
-  const [isCreatingClient, setIsCreatingClient] = useState(false);
-  const [isLoadingClientes, setIsLoadingClientes] = useState(true);
-  const [provisioningClienteId, setProvisioningClienteId] = useState(null);
   const [formErrors, setFormErrors] = useState({});
-  const [novoClienteErrors, setNovoClienteErrors] = useState({});
   const [isLoadingStatsIA, setIsLoadingStatsIA] = useState(true);
   const [formData, setFormData] = useState({
     razao_social: "",
     cnpj: "",
     whatsapp: "",
+    openai_api_key: "",
+    evolution_api_url: "",
+    evolution_api_key: "",
+    evolution_instance_name: "",
+    meta_bm_token: "",
+    google_mcc_token: "",
+    google_ads_client_id: "",
+    google_ads_client_secret: "",
+    google_ads_refresh_token: "",
+    google_ads_use_client_customer_id: "",
+    Maps_api_key: "",
+    asaas_api_key: "",
+    cloudflare_api_token: "",
+    cloudflare_zone_id: "",
+    cloudflare_cname_target: "",
     meta_page_id: "",
-  });
-  const [novoClienteData, setNovoClienteData] = useState({
-    nome: "",
-    razao_social: "",
-    cnpj: "",
-    email: "",
-    whatsapp: "",
-    criar_grupo: false,
-    logo_url: "",
   });
   const [statsIA, setStatsIA] = useState({
     custo_total_ia: 0,
@@ -53,14 +55,9 @@ export default function Configuracoes() {
     intraday_cleaner_enabled: false,
     admin_whatsapp_number: "",
   });
-  const [clientes, setClientes] = useState([]);
 
   function updateField(field, value) {
     setFormData((prev) => ({ ...prev, [field]: value }));
-  }
-
-  function updateNovoClienteField(field, value) {
-    setNovoClienteData((prev) => ({ ...prev, [field]: value }));
   }
 
   async function salvarConfiguracaoSistema(updatePatch, loadingMessage = "Salvando configuração...") {
@@ -90,25 +87,36 @@ export default function Configuracoes() {
       try {
         setIsLoading(true);
         setIsLoadingStatsIA(true);
-        setIsLoadingClientes(true);
-        const [configResponse, statsResponse, sistemaResponse, clientesResponse] = await Promise.all([
+        const [configResponse, statsResponse, sistemaResponse] = await Promise.all([
           authFetch(`${API_BASE_URL}/admin/configuracoes`),
           authFetch(`${API_BASE_URL}/admin/stats-ia?periodo_dias=30`),
           authFetch(`${API_BASE_URL}/admin/configuracoes-sistema`),
-          authFetch(`${API_BASE_URL}/admin/clientes`),
         ]);
         if (!configResponse.ok) throw new Error("Falha ao carregar configuracoes.");
         if (!sistemaResponse.ok) throw new Error("Falha ao carregar configuracoes de sistema.");
-        if (!clientesResponse.ok) throw new Error("Falha ao carregar clientes.");
         const payload = await configResponse.json();
         const payloadStats = statsResponse.ok ? await statsResponse.json() : null;
         const payloadSistema = await sistemaResponse.json();
-        const payloadClientes = await clientesResponse.json();
         if (mounted) {
           setFormData({
             razao_social: payload.razao_social || "",
             cnpj: payload.cnpj || "",
             whatsapp: payload.whatsapp || "",
+            openai_api_key: payload.openai_api_key || "",
+            evolution_api_url: payload.evolution_api_url || "",
+            evolution_api_key: payload.evolution_api_key || "",
+            evolution_instance_name: payload.evolution_instance_name || "",
+            meta_bm_token: payload.meta_bm_token || "",
+            google_mcc_token: payload.google_mcc_token || "",
+            google_ads_client_id: payload.google_ads_client_id || "",
+            google_ads_client_secret: payload.google_ads_client_secret || "",
+            google_ads_refresh_token: payload.google_ads_refresh_token || "",
+            google_ads_use_client_customer_id: payload.google_ads_use_client_customer_id || "",
+            Maps_api_key: payload.Maps_api_key || "",
+            asaas_api_key: payload.asaas_api_key || "",
+            cloudflare_api_token: payload.cloudflare_api_token || "",
+            cloudflare_zone_id: payload.cloudflare_zone_id || "",
+            cloudflare_cname_target: payload.cloudflare_cname_target || "",
             meta_page_id: payload.meta_page_id || "",
           });
           if (payloadStats?.status === "sucesso") {
@@ -124,7 +132,6 @@ export default function Configuracoes() {
             intraday_cleaner_enabled: Boolean(payloadSistema?.intraday_cleaner_enabled),
             admin_whatsapp_number: String(payloadSistema?.admin_whatsapp_number || ""),
           });
-          setClientes(Array.isArray(payloadClientes) ? payloadClientes : []);
         }
       } catch (error) {
         console.error(error);
@@ -133,7 +140,6 @@ export default function Configuracoes() {
         if (mounted) {
           setIsLoading(false);
           setIsLoadingStatsIA(false);
-          setIsLoadingClientes(false);
         }
       }
     })();
@@ -168,6 +174,21 @@ export default function Configuracoes() {
           razao_social: formData.razao_social,
           cnpj: formData.cnpj,
           whatsapp: whatsappDigits,
+          openai_api_key: formData.openai_api_key,
+          evolution_api_url: formData.evolution_api_url,
+          evolution_api_key: formData.evolution_api_key,
+          evolution_instance_name: formData.evolution_instance_name,
+          asaas_api_key: formData.asaas_api_key,
+          cloudflare_api_token: formData.cloudflare_api_token,
+          cloudflare_zone_id: formData.cloudflare_zone_id,
+          cloudflare_cname_target: formData.cloudflare_cname_target,
+          google_mcc_token: formData.google_mcc_token,
+          google_ads_client_id: formData.google_ads_client_id,
+          google_ads_client_secret: formData.google_ads_client_secret,
+          google_ads_refresh_token: formData.google_ads_refresh_token,
+          google_ads_use_client_customer_id: formData.google_ads_use_client_customer_id,
+          Maps_api_key: formData.Maps_api_key,
+          meta_bm_token: formData.meta_bm_token,
           meta_page_id: formData.meta_page_id,
         }),
       });
@@ -178,111 +199,6 @@ export default function Configuracoes() {
       toast.error("Erro ao salvar configurações.");
     } finally {
       setIsSaving(false);
-    }
-  }
-
-  async function handleCriarCliente(e) {
-    e.preventDefault();
-    const errors = {};
-    const whatsappDigits = String(novoClienteData.whatsapp || "").replace(/\D/g, "");
-    if (!String(novoClienteData.nome || "").trim()) {
-      errors.nome = "Informe o nome do cliente.";
-    }
-    if (!String(novoClienteData.email || "").trim()) {
-      errors.email = "Informe o e-mail de acesso do cliente.";
-    }
-    if (novoClienteData.criar_grupo && !whatsappDigits) {
-      errors.whatsapp = "WhatsApp do cliente e obrigatorio quando a criacao de grupo esta ativa.";
-    }
-    if (novoClienteData.whatsapp && whatsappDigits.length < 12) {
-      errors.whatsapp = "WhatsApp invalido. Use DDI+DDD+numero (ex: 5554999999999).";
-    }
-
-    if (Object.keys(errors).length > 0) {
-      setNovoClienteErrors(errors);
-      toast.error("Corrija os campos do novo cliente antes de salvar.");
-      return;
-    }
-
-    setNovoClienteErrors({});
-
-    try {
-      setIsCreatingClient(true);
-      const response = await authFetch(`${API_BASE_URL}/admin/clientes`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          nome: novoClienteData.nome,
-          razao_social: novoClienteData.razao_social,
-          cnpj: novoClienteData.cnpj,
-          email: novoClienteData.email,
-          whatsapp: whatsappDigits || null,
-          criar_grupo: novoClienteData.criar_grupo,
-          logo_url: novoClienteData.logo_url || null,
-        }),
-      });
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload?.detail || "Falha ao criar cliente.");
-
-      toast.success("Cliente criado com sucesso.");
-      if (payload?.warning) {
-        toast.warning(payload.warning);
-      }
-      setNovoClienteData({
-        nome: "",
-        razao_social: "",
-        cnpj: "",
-        email: "",
-        whatsapp: "",
-        criar_grupo: false,
-        logo_url: "",
-      });
-      if (payload?.cliente?.id) {
-        setClientes((prev) => [payload.cliente, ...prev]);
-      }
-    } catch (error) {
-      console.error(error);
-      toast.error(error?.message || "Erro ao criar cliente.");
-    } finally {
-      setIsCreatingClient(false);
-    }
-  }
-
-  async function handleProvisionarDominio(clienteId) {
-    const slugDigitado = window.prompt("Digite o slug para o subdominio (ex: clinica-sorriso):");
-    const slug = String(slugDigitado || "").trim().toLowerCase();
-    if (!slug) return;
-
-    try {
-      setProvisioningClienteId(clienteId);
-      const response = await authFetch(`${API_BASE_URL}/admin/infra/provisionar-dominio/${clienteId}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ slug }),
-      });
-      const payload = await response.json();
-      if (!response.ok) {
-        const detail = payload?.detail;
-        const errorMessage = typeof detail === "string" ? detail : detail?.mensagem || "Falha ao provisionar dominio.";
-        throw new Error(errorMessage);
-      }
-
-      toast.success(`Dominio provisionado: ${payload?.dominio_personalizado || `${slug}`}`);
-      setClientes((prev) =>
-        prev.map((cliente) =>
-          cliente.id === clienteId
-            ? {
-                ...cliente,
-                dominio_personalizado: payload?.dominio_personalizado || cliente.dominio_personalizado || null,
-              }
-            : cliente
-        )
-      );
-    } catch (error) {
-      console.error(error);
-      toast.error(error?.message || "Erro ao provisionar dominio.");
-    } finally {
-      setProvisioningClienteId(null);
     }
   }
 
@@ -348,117 +264,131 @@ export default function Configuracoes() {
               />
             </FormSection>
 
+            <FormSection title="Inteligência Artificial (OpenAI)" description="Credenciais de IA usadas nas automações.">
+              <Input
+                type="password"
+                label="OpenAI API Key"
+                placeholder="sk-..."
+                value={formData.openai_api_key}
+                onChange={(e) => updateField("openai_api_key", e.target.value)}
+              />
+            </FormSection>
+
+            <FormSection title="WhatsApp (Evolution API)" description="Configuração da instância de envio de mensagens.">
+              <Input
+                label="Evolution API URL"
+                placeholder="https://sua-evolution-api.com"
+                value={formData.evolution_api_url}
+                onChange={(e) => updateField("evolution_api_url", e.target.value)}
+              />
+              <Input
+                type="password"
+                label="Evolution API Key"
+                placeholder="********"
+                value={formData.evolution_api_key}
+                onChange={(e) => updateField("evolution_api_key", e.target.value)}
+              />
+              <Input
+                label="Evolution Instance Name"
+                placeholder="instancia-principal"
+                value={formData.evolution_instance_name}
+                onChange={(e) => updateField("evolution_instance_name", e.target.value)}
+              />
+            </FormSection>
+
+            <FormSection title="Financeiro (Asaas)" description="Credencial de integração financeira.">
+              <Input
+                type="password"
+                label="Asaas API Key"
+                placeholder="********"
+                value={formData.asaas_api_key}
+                onChange={(e) => updateField("asaas_api_key", e.target.value)}
+              />
+            </FormSection>
+
+            <FormSection title="Infraestrutura (Cloudflare)" description="Credenciais para provisionamento de subdomínios.">
+              <Input
+                type="password"
+                label="Cloudflare API Token"
+                placeholder="********"
+                value={formData.cloudflare_api_token}
+                onChange={(e) => updateField("cloudflare_api_token", e.target.value)}
+              />
+              <Input
+                type="password"
+                label="Cloudflare Zone ID"
+                placeholder="********"
+                value={formData.cloudflare_zone_id}
+                onChange={(e) => updateField("cloudflare_zone_id", e.target.value)}
+              />
+              <Input
+                label="Cloudflare CNAME Target"
+                placeholder="ex: servidor.seudominio.com"
+                value={formData.cloudflare_cname_target}
+                onChange={(e) => updateField("cloudflare_cname_target", e.target.value)}
+              />
+            </FormSection>
+
+            <FormSection title="Google Ads & Maps" description="Tokens e credenciais para sincronização com Google Ads e Maps.">
+              <Input
+                type="password"
+                label="Google MCC Token"
+                placeholder="********"
+                value={formData.google_mcc_token}
+                onChange={(e) => updateField("google_mcc_token", e.target.value)}
+              />
+              <Input
+                type="password"
+                label="Google Ads Client ID"
+                placeholder="********"
+                value={formData.google_ads_client_id}
+                onChange={(e) => updateField("google_ads_client_id", e.target.value)}
+              />
+              <Input
+                type="password"
+                label="Google Ads Client Secret"
+                placeholder="********"
+                value={formData.google_ads_client_secret}
+                onChange={(e) => updateField("google_ads_client_secret", e.target.value)}
+              />
+              <Input
+                type="password"
+                label="Google Ads Refresh Token"
+                placeholder="********"
+                value={formData.google_ads_refresh_token}
+                onChange={(e) => updateField("google_ads_refresh_token", e.target.value)}
+              />
+              <Input
+                label="Google Ads Use Client Customer ID"
+                placeholder="ex: 123-456-7890"
+                value={formData.google_ads_use_client_customer_id}
+                onChange={(e) => updateField("google_ads_use_client_customer_id", e.target.value)}
+              />
+              <Input
+                type="password"
+                label="Maps API Key"
+                placeholder="********"
+                value={formData.Maps_api_key}
+                onChange={(e) => updateField("Maps_api_key", e.target.value)}
+              />
+            </FormSection>
+
+            <FormSection title="Meta Ads (Gerenciador)" description="Token principal do Business Manager para operações.">
+              <Input
+                type="password"
+                label="Meta BM Token"
+                placeholder="********"
+                value={formData.meta_bm_token}
+                onChange={(e) => updateField("meta_bm_token", e.target.value)}
+              />
+            </FormSection>
+
             <div>
               <Button type="submit" variant="primary" isLoading={isSaving}>
                 Salvar Configurações
               </Button>
             </div>
           </form>
-        </Card>
-
-        <Card className="mt-6">
-          <form onSubmit={handleCriarCliente} className="space-y-6">
-            <FormSection
-              title="Novo Cliente"
-              description="Cadastre novos clientes e, se desejar, crie automaticamente o grupo de onboarding no WhatsApp."
-            >
-              <Input
-                label="Nome do Cliente"
-                placeholder="Ex: Oficina Auto Center"
-                value={novoClienteData.nome}
-                onChange={(e) => updateNovoClienteField("nome", e.target.value)}
-                error={novoClienteErrors.nome}
-              />
-              <Input
-                label="Razao Social"
-                placeholder="Ex: Oficina Auto Center LTDA"
-                value={novoClienteData.razao_social}
-                onChange={(e) => updateNovoClienteField("razao_social", e.target.value)}
-              />
-              <Input
-                label="CNPJ"
-                placeholder="Ex: 12.345.678/0001-90"
-                value={novoClienteData.cnpj}
-                onChange={(e) => updateNovoClienteField("cnpj", e.target.value)}
-              />
-              <Input
-                type="email"
-                label="E-mail de Acesso"
-                placeholder="cliente@empresa.com"
-                value={novoClienteData.email}
-                onChange={(e) => updateNovoClienteField("email", e.target.value)}
-                error={novoClienteErrors.email}
-              />
-              <Input
-                label="WhatsApp do Cliente"
-                placeholder="5554999999999"
-                value={novoClienteData.whatsapp}
-                onChange={(e) => updateNovoClienteField("whatsapp", e.target.value)}
-                error={novoClienteErrors.whatsapp}
-              />
-              <Input
-                label="Logo URL (Opcional)"
-                placeholder="https://seusite.com/logo.png"
-                value={novoClienteData.logo_url}
-                onChange={(e) => updateNovoClienteField("logo_url", e.target.value)}
-              />
-
-              <label className="flex items-center gap-2 text-sm text-slate-700">
-                <input
-                  type="checkbox"
-                  checked={novoClienteData.criar_grupo}
-                  onChange={(e) => updateNovoClienteField("criar_grupo", e.target.checked)}
-                  className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                />
-                Criar Grupo de WhatsApp Automaticamente?
-              </label>
-            </FormSection>
-
-            <div>
-              <Button type="submit" variant="primary" isLoading={isCreatingClient}>
-                Cadastrar Cliente
-              </Button>
-            </div>
-          </form>
-        </Card>
-
-        <Card className="mt-6">
-          <FormSection
-            title="Provisionamento de Dominio (Cloudflare)"
-            description="Dispare a criacao de subdominio por cliente diretamente pela API."
-          >
-            <div className="space-y-3">
-              {isLoadingClientes ? (
-                <p className="text-sm text-slate-500">Carregando clientes...</p>
-              ) : clientes.length === 0 ? (
-                <p className="text-sm text-slate-500">Nenhum cliente cadastrado.</p>
-              ) : (
-                clientes.map((cliente) => (
-                  <div
-                    key={cliente.id}
-                    className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-slate-50 p-4 md:flex-row md:items-center md:justify-between"
-                  >
-                    <div>
-                      <p className="text-sm font-semibold text-slate-900">{cliente.nome}</p>
-                      <p className="text-xs text-slate-500">ID: {cliente.id}</p>
-                      <p className="mt-1 text-xs text-slate-600">
-                        Dominio atual: {cliente.dominio_personalizado || "Nao provisionado"}
-                      </p>
-                    </div>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      isLoading={provisioningClienteId === cliente.id}
-                      onClick={() => handleProvisionarDominio(cliente.id)}
-                    >
-                      Provisionar Dominio (Cloudflare)
-                    </Button>
-                  </div>
-                ))
-              )}
-            </div>
-          </FormSection>
         </Card>
 
         <Card className="mt-6">

@@ -23,6 +23,7 @@ class FerrioliConfig(Base):
     evolution_api_key = Column(String, nullable=True)
     evolution_instance_name = Column(String, nullable=True)
     openai_api_key = Column(String, nullable=False)
+    asaas_api_key = Column(String, nullable=True)
     cloudflare_api_token = Column(String, nullable=True)
     cloudflare_zone_id = Column(String, nullable=True)
     cloudflare_cname_target = Column(String, nullable=True)

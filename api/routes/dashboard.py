@@ -21,6 +21,7 @@ from engines.ai_engine.strategist import (
 from engines.google_engine.launcher import GoogleAdsLauncher
 from engines.google_engine.metrics import GoogleMetricsCollector
 from engines.meta_engine.launcher import MetaAdsLauncher
+from engines.utils.asaas_service import AsaasService
 from engines.utils.cloudflare_service import CloudflareService
 from engines.utils.security import get_current_user, require_admin_user
 from engines.utils.security import generate_temp_password, hash_password
@@ -56,7 +57,24 @@ class ClienteResponse(BaseModel):
     google_customer_id: Optional[str] = None
     meta_ad_account_id: Optional[str] = None
     dominio_personalizado: Optional[str] = None
+    asaas_customer_id: Optional[str] = None
+    data_vencimento_licenca: Optional[datetime] = None
     status_ativo: bool
+
+
+class ClienteUpdateRequest(BaseModel):
+    nome: Optional[str] = None
+    razao_social: Optional[str] = None
+    cnpj: Optional[str] = None
+    whatsapp: Optional[str] = None
+    google_customer_id: Optional[str] = None
+    meta_ad_account_id: Optional[str] = None
+    status_ativo: Optional[bool] = None
+
+
+class ClienteCobrarRequest(BaseModel):
+    valor: float = Field(gt=0, description="Valor da cobranca deve ser maior que zero")
+    descricao: str
 
 
 class CampanhaResponse(BaseModel):
@@ -199,6 +217,10 @@ class ConfiguracaoResponse(BaseModel):
     evolution_api_key: Optional[str] = None
     evolution_instance_name: Optional[str] = None
     openai_api_key: str
+    asaas_api_key: Optional[str] = None
+    cloudflare_api_token: Optional[str] = None
+    cloudflare_zone_id: Optional[str] = None
+    cloudflare_cname_target: Optional[str] = None
     razao_social: Optional[str] = None
     cnpj: Optional[str] = None
     whatsapp: Optional[str] = None
@@ -217,6 +239,10 @@ class ConfiguracaoUpdateRequest(BaseModel):
     evolution_api_key: Optional[str] = None
     evolution_instance_name: Optional[str] = None
     openai_api_key: Optional[str] = None
+    asaas_api_key: Optional[str] = None
+    cloudflare_api_token: Optional[str] = None
+    cloudflare_zone_id: Optional[str] = None
+    cloudflare_cname_target: Optional[str] = None
     razao_social: Optional[str] = None
     cnpj: Optional[str] = None
     whatsapp: Optional[str] = None
@@ -272,6 +298,24 @@ def _serializar_campanha(campanha: Campanha) -> CampanhaResponse:
     )
 
 
+def _serializar_cliente(cliente: Cliente) -> ClienteResponse:
+    return ClienteResponse(
+        id=cliente.id,
+        nome=cliente.nome,
+        razao_social=cliente.razao_social,
+        cnpj=cliente.cnpj,
+        email_acesso=(cliente.usuario.email if cliente.usuario else None),
+        whatsapp=cliente.whatsapp,
+        whatsapp_group_jid=cliente.whatsapp_group_jid,
+        google_customer_id=cliente.google_customer_id,
+        meta_ad_account_id=cliente.meta_ad_account_id,
+        dominio_personalizado=cliente.dominio_personalizado,
+        asaas_customer_id=cliente.asaas_customer_id,
+        data_vencimento_licenca=cliente.data_vencimento_licenca,
+        status_ativo=cliente.status_ativo,
+    )
+
+
 def _serializar_configuracao(config: FerrioliConfig, cliente_padrao: Optional[Cliente] = None) -> ConfiguracaoResponse:
     return ConfiguracaoResponse(
         id=config.id,
@@ -287,6 +331,10 @@ def _serializar_configuracao(config: FerrioliConfig, cliente_padrao: Optional[Cl
         evolution_api_key=config.evolution_api_key,
         evolution_instance_name=config.evolution_instance_name,
         openai_api_key=config.openai_api_key,
+        asaas_api_key=config.asaas_api_key,
+        cloudflare_api_token=config.cloudflare_api_token,
+        cloudflare_zone_id=config.cloudflare_zone_id,
+        cloudflare_cname_target=config.cloudflare_cname_target,
         razao_social=(cliente_padrao.razao_social if cliente_padrao else None),
         cnpj=(cliente_padrao.cnpj if cliente_padrao else None),
         whatsapp=(cliente_padrao.whatsapp if cliente_padrao else None),
@@ -349,6 +397,10 @@ def atualizar_configuracoes(
         "evolution_api_key",
         "evolution_instance_name",
         "openai_api_key",
+        "asaas_api_key",
+        "cloudflare_api_token",
+        "cloudflare_zone_id",
+        "cloudflare_cname_target",
         "razao_social",
         "cnpj",
         "whatsapp",
@@ -433,23 +485,50 @@ def atualizar_configuracoes_sistema(
 
 @router.get("/clientes", response_model=list[ClienteResponse])
 def listar_clientes(db: Session = Depends(get_db)):
-    clientes = db.query(Cliente).all()
-    return [
-        ClienteResponse(
-            id=cliente.id,
-            nome=cliente.nome,
-            razao_social=cliente.razao_social,
-            cnpj=cliente.cnpj,
-            email_acesso=(cliente.usuario.email if cliente.usuario else None),
-            whatsapp=cliente.whatsapp,
-            whatsapp_group_jid=cliente.whatsapp_group_jid,
-            google_customer_id=cliente.google_customer_id,
-            meta_ad_account_id=cliente.meta_ad_account_id,
-            dominio_personalizado=cliente.dominio_personalizado,
-            status_ativo=cliente.status_ativo,
-        )
-        for cliente in clientes
-    ]
+    clientes = db.query(Cliente).order_by(Cliente.id.desc()).all()
+    return [_serializar_cliente(cliente) for cliente in clientes]
+
+
+@router.put("/clientes/{cliente_id}", response_model=ClienteResponse)
+def atualizar_cliente(
+    cliente_id: int,
+    payload: ClienteUpdateRequest,
+    request: Request,
+    current_user: Usuario = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    cliente = db.query(Cliente).filter(Cliente.id == cliente_id).first()
+    if not cliente:
+        raise HTTPException(status_code=404, detail="Cliente nao encontrado.")
+
+    update_data = payload.model_dump(exclude_unset=True)
+    campos_string = {"nome", "razao_social", "cnpj", "whatsapp", "google_customer_id", "meta_ad_account_id"}
+    campos_nullable = {"razao_social", "cnpj", "whatsapp", "google_customer_id", "meta_ad_account_id"}
+    for field_name in campos_string:
+        if field_name in update_data and isinstance(update_data[field_name], str):
+            valor_limpo = update_data[field_name].strip()
+            update_data[field_name] = valor_limpo if (valor_limpo or field_name not in campos_nullable) else None
+
+    for field_name, field_value in update_data.items():
+        setattr(cliente, field_name, field_value)
+
+    db.commit()
+    db.refresh(cliente)
+
+    if update_data:
+        try:
+            registrar_log_safe(
+                db=db,
+                user_id=current_user.id,
+                acao="ATUALIZAR_CLIENTE",
+                recurso=f"Cliente #{cliente.id}",
+                detalhes={"campos_alterados": sorted(update_data.keys())},
+                request=request,
+            )
+        except Exception:
+            pass
+
+    return _serializar_cliente(cliente)
 
 
 @router.post("/infra/provisionar-dominio/{cliente_id}")
@@ -520,6 +599,108 @@ def provisionar_dominio_cliente(
         "dominio_personalizado": dominio_final,
         "cloudflare": cf_result,
     }
+
+
+@router.post("/clientes/{cliente_id}/cobrar")
+def cobrar_cliente(
+    cliente_id: int,
+    payload: ClienteCobrarRequest,
+    request: Request,
+    current_user: Usuario = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    cliente = db.query(Cliente).filter(Cliente.id == cliente_id).first()
+    if not cliente:
+        raise HTTPException(status_code=404, detail="Cliente nao encontrado.")
+
+    config = db.query(FerrioliConfig).first()
+    if not config:
+        raise HTTPException(status_code=404, detail="Configuracao master nao encontrada.")
+
+    asaas_api_key = str(config.asaas_api_key or "").strip()
+    if not asaas_api_key:
+        raise HTTPException(status_code=400, detail="Asaas API Key nao configurada.")
+
+    descricao = str(payload.descricao or "").strip()
+    if not descricao:
+        raise HTTPException(status_code=400, detail="Descricao obrigatoria para gerar cobranca.")
+
+    asaas_service = AsaasService()
+    if not cliente.asaas_customer_id:
+        try:
+            novo_cliente_asaas = asaas_service.criar_cliente(
+                api_key=asaas_api_key,
+                nome=cliente.nome,
+                cpf_cnpj=cliente.cnpj,
+                email=(cliente.usuario.email if cliente.usuario else None),
+                telefone=cliente.whatsapp,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Falha ao criar cliente no Asaas: {exc}") from exc
+
+        asaas_customer_id = str(novo_cliente_asaas.get("id") or "").strip()
+        if not asaas_customer_id:
+            raise HTTPException(status_code=502, detail="Asaas nao retornou ID do cliente.")
+        cliente.asaas_customer_id = asaas_customer_id
+        db.commit()
+        db.refresh(cliente)
+
+    try:
+        cobranca = asaas_service.criar_cobranca_avulsa(
+            api_key=asaas_api_key,
+            asaas_customer_id=str(cliente.asaas_customer_id),
+            valor=float(payload.valor),
+            descricao=descricao,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Falha ao criar cobranca no Asaas: {exc}") from exc
+
+    invoice_url = str(cobranca.get("invoiceUrl") or "").strip()
+    if not invoice_url:
+        raise HTTPException(status_code=502, detail="Asaas nao retornou URL de pagamento.")
+
+    evolution_disponivel = all(
+        [
+            str(config.evolution_api_url or "").strip(),
+            str(config.evolution_api_key or "").strip(),
+            str(config.evolution_instance_name or "").strip(),
+        ]
+    )
+    if cliente.whatsapp and evolution_disponivel:
+        valor_formatado = (
+            f"R$ {float(payload.valor):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        )
+        mensagem = (
+            f"Ola {cliente.nome}, sua fatura referente a {descricao} no valor de {valor_formatado} foi gerada. "
+            f"Acesse o link para realizar o pagamento via PIX: {invoice_url}"
+        )
+        try:
+            EvolutionService().enviar_texto_whatsapp(
+                config=config,
+                numero_destino=cliente.whatsapp,
+                mensagem=mensagem,
+            )
+        except Exception as exc:
+            logger.warning("Falha ao enviar cobranca no WhatsApp para cliente_id=%s: %s", cliente.id, exc)
+
+    try:
+        registrar_log_safe(
+            db=db,
+            user_id=current_user.id,
+            acao="GERAR_COBRANCA_CLIENTE",
+            recurso=f"Cliente #{cliente.id}",
+            detalhes={
+                "valor": float(payload.valor),
+                "descricao": descricao,
+                "invoice_url": invoice_url,
+                "asaas_payment_id": cobranca.get("id"),
+            },
+            request=request,
+        )
+    except Exception:
+        pass
+
+    return {"status": "sucesso", "url_pagamento": invoice_url}
 
 
 @router.post("/clientes")

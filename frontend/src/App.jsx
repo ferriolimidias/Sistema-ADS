@@ -4,6 +4,7 @@ import Navbar from "./components/layout/Navbar";
 import { ToastProvider } from "./components/ui/ToastProvider";
 import AprovacaoCampanha from "./pages/admin/AprovacaoCampanha";
 import AuditLogs from "./pages/admin/AuditLogs";
+import Clientes from "./pages/admin/Clientes";
 import Configuracoes from "./pages/admin/Configuracoes";
 import Dashboard from "./pages/admin/Dashboard";
 import LimpezaTermos from "./pages/admin/LimpezaTermos";
@@ -103,6 +104,16 @@ export default function App() {
               <ProtectedRoute allowRoles={["ADMIN"]}>
                 <AuthenticatedPage>
                   <Dashboard />
+                </AuthenticatedPage>
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/admin/clientes"
+            element={
+              <ProtectedRoute allowRoles={["ADMIN"]}>
+                <AuthenticatedPage>
+                  <Clientes />
                 </AuthenticatedPage>
               </ProtectedRoute>
             }
