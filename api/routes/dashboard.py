@@ -825,7 +825,6 @@ def obter_campanha(campanha_id: int, db: Session = Depends(get_db)):
     return _serializar_campanha(campanha)
 
 
-@router.get("/performance-consolidada", response_model=PerformanceConsolidadaResponse)
 def _calcular_breakdown_servicos(
     db: Session,
     ids_campanhas: list[int],
@@ -868,6 +867,7 @@ def _calcular_breakdown_servicos(
     return breakdown
 
 
+@router.get("/performance-consolidada", response_model=PerformanceConsolidadaResponse)
 def performance_consolidada(
     cliente_id: Optional[int] = Query(default=None),
     campanha_id: Optional[int] = Query(default=None),
