@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 import os
 
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -18,9 +19,11 @@ from models.database import Base, SessionLocal, engine
 from models import schema  # noqa: F401
 from models.schema import Usuario, UsuarioRole
 
+load_dotenv()
+
 
 def seed_superadmin_if_needed():
-    admin_email = os.getenv("SUPERADMIN_EMAIL", "").strip().lower()
+    admin_email = os.getenv("SUPERADMIN_EMAIL", "ferriolimidias@gmail.com").strip().lower()
     admin_password = os.getenv("SUPERADMIN_PASSWORD", "").strip()
     if not admin_email or not admin_password:
         return

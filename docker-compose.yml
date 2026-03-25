@@ -50,6 +50,7 @@ services:
       APP_ENV: ${APP_ENV:-production}
       PYTHONUNBUFFERED: "1"
       TZ: ${TZ:-America/Sao_Paulo}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg2://postgres:postgres@db:5432/ferrioli_traffic}
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: ${POSTGRES_DB:-ferrioli_traffic}
@@ -57,6 +58,8 @@ services:
       POSTGRES_PORT: ${POSTGRES_PORT:-5432}
       REDIS_HOST: ${REDIS_HOST:-redis}
       REDIS_PORT: ${REDIS_PORT:-6379}
+      SUPERADMIN_EMAIL: ${SUPERADMIN_EMAIL:-ferriolimidias@gmail.com}
+      SUPERADMIN_PASSWORD: ${SUPERADMIN_PASSWORD:-}
     depends_on:
       db:
         condition: service_healthy
